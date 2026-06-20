@@ -165,3 +165,34 @@ watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
     </main>
   </div>
 </template>
+
+<style scoped>
+/* 这些类是 Live2D 独有的，宿主 Tailwind v4 移出后会 purge 掉 → 插件自带。
+   基础组件类（btn/input/range/toggle/progress）仍由宿主提供，这里只补缺的修饰/工具类。 */
+.bg-base-100 { background-color: var(--color-base-100); }
+.border-base-300 { border-color: var(--color-base-300); }
+
+/* 间距 / 尺寸工具类 */
+.gap-1\.5 { gap: 0.375rem; }
+.py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+.w-14 { width: 3.5rem; }
+.w-24 { width: 6rem; }
+.min-w-32 { min-width: 8rem; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* 方形图标按钮：宽=高、去横向内边距（btn-sm 高度约 2rem） */
+.btn-square { width: 2rem; height: 2rem; padding-inline: 0; }
+
+/* 小号输入框：--size 给基础 .input 算高度，再兜底显式高度 */
+.input-xs {
+  --size: 1.5rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  font-size: 0.75rem;
+  padding-inline: 0.5rem;
+}
+.input-bordered { border: 1px solid var(--color-base-300); }
+
+/* 进度条主题色：DaisyUI 的填充用 currentColor，设 color 即可 */
+.progress-primary { color: var(--color-primary); }
+</style>

@@ -35,3 +35,9 @@ async function importLive2D() {
     </button>
   </div>
 </template>
+
+<style scoped>
+/* Live2D 独有、宿主 purge 掉的类（--color-text-secondary 仍由宿主 :root 提供，这里继承） */
+.mt-0\.5 { margin-top: 0.125rem; }
+.text-\[var\(--color-text-secondary\)\] { color: var(--color-text-secondary); }
+</style>
