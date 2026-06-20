@@ -1,0 +1,22 @@
+{
+  "name": "sekaitext-plugin-live2d",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "pack": "node pack.mjs",
+    "dist": "vite build && node pack.mjs"
+  },
+  "dependencies": {
+    "@sekai-world/pixi-live2d-display-mulmotion": "^0.5.1",
+    "howler": "^2.2.4",
+    "lucide-vue-next": "^1.0.0",
+    "pixi.js": "^7.4.3"
+  },
+  "devDependencies": {
+    "@types/howler": "^2.2.13",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "vite": "^8.0.10",
+    "vue": "^3.5.32"
+  }
+}
