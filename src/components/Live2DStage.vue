@@ -271,39 +271,164 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapRef" class="relative w-full h-full overflow-hidden bg-black" @click="onClick">
-    <canvas ref="canvasRef" class="w-full h-full block" />
+  <div ref="wrapRef" class="l2d-wrap" @click="onClick">
+    <canvas ref="canvasRef" class="l2d-canvas" />
 
-    <div v-if="telop" class="absolute inset-x-0 top-1/3 flex justify-center pointer-events-none px-6">
-      <div class="bg-black/55 text-white text-lg md:text-2xl tracking-wide rounded px-6 py-3 text-center whitespace-pre-wrap">
-        {{ telop }}
+    <div v-if="telop" class="l2d-telop">
+      <div class="l2d-telop-box">{{ telop }}</div>
+    </div>
+
+    <div v-if="fullScreenText" class="l2d-fulltext">
+      <div class="l2d-fulltext-box">{{ fullScreenText }}</div>
+    </div>
+
+    <div v-if="dialog" class="l2d-dialog">
+      <div class="l2d-dialog-box">
+        <div v-if="dialog.name" class="l2d-dialog-name">{{ dialog.name }}</div>
+        <div class="l2d-dialog-body">{{ dialog.body }}</div>
       </div>
     </div>
 
-    <div v-if="fullScreenText" class="absolute inset-0 flex items-center justify-center bg-black/80 pointer-events-none px-10">
-      <div class="text-white text-2xl md:text-4xl leading-relaxed text-center whitespace-pre-wrap">
-        {{ fullScreenText }}
-      </div>
+    <div v-if="loading" class="l2d-loading">
+      <span class="l2d-spinner" />
     </div>
-
-    <div
-      v-if="dialog"
-      class="absolute left-1/2 -translate-x-1/2 bottom-6 w-[80%] max-w-3xl pointer-events-none"
-    >
-      <div class="bg-base-100/85 backdrop-blur rounded-2xl border border-base-300 px-5 py-3 shadow-lg">
-        <div v-if="dialog.name" class="text-primary font-semibold text-sm mb-1">{{ dialog.name }}</div>
-        <div class="text-base-content text-base leading-relaxed whitespace-pre-wrap">{{ dialog.body }}</div>
-      </div>
-    </div>
-
-    <div v-if="loading" class="absolute inset-0 flex items-center justify-center pointer-events-none">
-      <span class="loading loading-spinner loading-lg text-primary" />
-    </div>
-    <div v-if="errorMsg" class="absolute top-2 left-2 right-2 text-xs text-error bg-base-200/80 rounded px-2 py-1">
-      {{ errorMsg }}
-    </div>
-    <div v-if="playing && !autoPlay" class="absolute bottom-1 right-2 text-xs text-base-content/50 pointer-events-none">
-      点击推进 ▸
-    </div>
+    <div v-if="errorMsg" class="l2d-error">{{ errorMsg }}</div>
+    <div v-if="playing && !autoPlay" class="l2d-hint">点击推进 ▸</div>
   </div>
 </template>
+
+<style scoped>
+.l2d-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+.l2d-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* telop —— 居中横幅字 */
+.l2d-telop {
+  position: absolute;
+  inset-inline: 0;
+  top: 33.333%;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  padding-inline: 1.5rem;
+}
+.l2d-telop-box {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 1.125rem;
+  letter-spacing: 0.025em;
+  border-radius: 0.25rem;
+  padding: 0.75rem 1.5rem;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+/* fullScreenText —— 全屏黑幕大字 */
+.l2d-fulltext {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  padding-inline: 2.5rem;
+}
+.l2d-fulltext-box {
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1.625;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+/* dialog —— 底部对话框（主题色取宿主 DaisyUI 变量） */
+.l2d-dialog {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 1.5rem;
+  width: 80%;
+  max-width: 48rem;
+  pointer-events: none;
+}
+.l2d-dialog-box {
+  background: color-mix(in oklab, var(--color-base-100) 85%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--color-base-300);
+  border-radius: 1rem;
+  padding: 0.75rem 1.25rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+}
+.l2d-dialog-name {
+  color: var(--color-primary);
+  font-weight: 600;
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+.l2d-dialog-body {
+  color: var(--color-base-content);
+  font-size: 1rem;
+  line-height: 1.625;
+  white-space: pre-wrap;
+}
+
+/* loading 转圈 */
+.l2d-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.l2d-spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 3px solid color-mix(in oklab, var(--color-primary) 30%, transparent);
+  border-top-color: var(--color-primary);
+  border-radius: 9999px;
+  animation: l2d-spin 0.7s linear infinite;
+}
+@keyframes l2d-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* error 条 */
+.l2d-error {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--color-error);
+  background: color-mix(in oklab, var(--color-base-200) 80%, transparent);
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+}
+
+/* 推进提示 */
+.l2d-hint {
+  position: absolute;
+  bottom: 0.25rem;
+  right: 0.5rem;
+  font-size: 0.75rem;
+  color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+  pointer-events: none;
+}
+
+/* 大屏放大字号（对齐原 md: 断点） */
+@media (min-width: 768px) {
+  .l2d-telop-box { font-size: 1.5rem; }
+  .l2d-fulltext-box { font-size: 2.25rem; }
+}
+</style>

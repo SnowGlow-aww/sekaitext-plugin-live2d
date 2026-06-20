@@ -68,8 +68,39 @@ function hostShimPlugin() {
   }
 }
 
+// In lib mode, `cssCodeSplit: false` still EMITS a separate style.css instead of
+// inlining it. The .sekplugin only ships entry.js, so that CSS would never load.
+// This plugin folds the emitted CSS back into entry.js as a runtime <style> inject,
+// keeping the plugin a true single file.
+function cssInjectPlugin() {
+  return {
+    name: 'css-inject',
+    enforce: 'post' as const,
+    generateBundle(_options: unknown, bundle: Record<string, any>) {
+      let css = ''
+      for (const [name, file] of Object.entries(bundle)) {
+        if (file.type === 'asset' && name.endsWith('.css')) {
+          css += typeof file.source === 'string' ? file.source : file.source.toString()
+          delete bundle[name]
+        }
+      }
+      if (!css) return
+      const inject =
+        `(function(){try{var d=document,id="sekai-plugin-live2d-css";` +
+        `if(!d.getElementById(id)){var s=d.createElement("style");s.id=id;` +
+        `s.textContent=${JSON.stringify(css)};d.head.appendChild(s);}}catch(e){}})();\n`
+      for (const file of Object.values(bundle)) {
+        if (file.type === 'chunk' && file.isEntry) {
+          file.code = inject + file.code
+          break
+        }
+      }
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [hostShimPlugin(), vue()],
+  plugins: [hostShimPlugin(), vue(), cssInjectPlugin()],
   // pixi/howler reference process.env.NODE_ENV at runtime; the plugin runs in a
   // browser with no `process`, so inline the values at build time.
   define: {
@@ -87,7 +118,7 @@ export default defineConfig({
     rollupOptions: {
       output: { inlineDynamicImports: true },
     },
-    // Inline CSS into the JS so the plugin is a single file.
+    // Keep CSS as one asset (no per-chunk split); css-inject then folds it into entry.js.
     cssCodeSplit: false,
   },
 })
