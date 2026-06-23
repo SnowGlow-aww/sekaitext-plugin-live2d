@@ -1,6 +1,6 @@
 {
   "name": "sekaitext-plugin-live2d",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "build": "vite build",
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@sekai-world/pixi-live2d-display-mulmotion": "^0.5.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "howler": "^2.2.4",
     "lucide-vue-next": "^1.0.0",
     "pixi.js": "^7.4.3"
