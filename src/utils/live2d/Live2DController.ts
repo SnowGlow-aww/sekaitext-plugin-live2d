@@ -311,13 +311,13 @@ export class Live2DController {
    *  motion(name, 0). Expressions are applied via expression(name). */
   private applyMotion(costume: string, motion: string, expression: string) {
     const entry = this.models.get(costume)
-    if (!entry) return
+    if (!entry) { console.warn(`[live2d] applyMotion: no loaded model for costume "${costume}" (motion=${motion} expr=${expression})`); return }
     const m = entry.model
     if (motion) {
-      try { m.motion(motion, 0, 3 /* MotionPriority.FORCE */) } catch { /* not in model */ }
+      try { m.motion(motion, 0, 3 /* MotionPriority.FORCE */) } catch (e) { console.warn(`[live2d] motion "${motion}" failed on "${costume}"`, e) }
     }
     if (expression) {
-      try { m.expression(expression) } catch { /* not in model */ }
+      try { m.expression(expression) } catch (e) { console.warn(`[live2d] expression "${expression}" failed on "${costume}"`, e) }
     }
   }
 
@@ -655,6 +655,9 @@ export class Live2DController {
           this.clearLipSync()
           howl.volume(vol); howl.play()
         }
+        console.info(`[live2d] voice "${vid}" play (vol=${vol} lipSync=${t.LipSync} costumes=${costumes.length} playing=${howl.playing()})`)
+      } else {
+        console.warn(`[live2d] voice "${vid}": no howl available (load failed) — line will be silent`)
       }
     }
   }

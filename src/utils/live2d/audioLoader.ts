@@ -3,7 +3,7 @@
 // BGM are routed through the live2d proxy so they load in every environment
 // (the preview/webview sandbox blocks some CDNs on direct fetch).
 
-import { Howl } from 'howler'
+import { Howl, Howler } from 'howler'
 import { api } from '../../host'
 import { proxied, getBgmUrl, EXMEANING_BASE } from '../../constants/live2d'
 
@@ -44,10 +44,12 @@ export async function loadVoice(
 ): Promise<LoadedAudio | null> {
   try {
     const { url } = await api.voiceUrl(scenarioId, voiceId, source)
-    if (!url) return null
+    if (!url) { console.warn(`[live2d] voice "${voiceId}": empty url from backend (source=${source})`); return null }
     const howl = await makeHowl(proxied(voiceToExmeaning(url)))
+    console.info(`[live2d] voice "${voiceId}" loaded ok (AudioContext=${Howler.ctx?.state ?? '?'})`)
     return { id: voiceId, kind: 'voice', howl }
-  } catch {
+  } catch (e) {
+    console.warn(`[live2d] voice "${voiceId}" load FAILED (${scenarioId}, source=${source})`, e)
     return null
   }
 }

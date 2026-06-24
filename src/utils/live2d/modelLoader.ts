@@ -111,9 +111,12 @@ export async function loadModelSettings(costume: string): Promise<any | null> {
       }))
       ref.Motions = motionGroups
       ref.Expressions = expressions
+      console.info(`[live2d] "${costume}": injected ${expressions.length} expressions / ${Object.keys(motionGroups).length} motions (base=${motionBase})`)
+    } else {
+      console.warn(`[live2d] "${costume}": no motion list (loadMotionList returned null) — model has 0 expressions/motions`)
     }
-  } catch {
-    /* no motion data — model renders in default pose */
+  } catch (e) {
+    console.warn(`[live2d] "${costume}": motion/expression injection threw`, e)
   }
 
   json.FileReferences = ref
