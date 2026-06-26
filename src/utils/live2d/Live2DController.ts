@@ -35,6 +35,7 @@ interface ModelEntry {
   position: [number, number]
   hidden: boolean
   appearAt: number
+  expressions: string[] // facial Names registered as the "Expression" motion group
 }
 
 const STAGE_W = 1920
@@ -269,20 +270,27 @@ export class Live2DController {
       try {
         const settings = await loadModelSettings(costume)
         if (!settings) return null
-        const model = await Live2DModel.from(settings, { ticker: PIXI.Ticker.shared, autoInteract: false })
+        const model = await Live2DModel.from(settings, { ticker: PIXI.Ticker.shared, autoInteract: false, breathDepth: 0.2 })
         model.anchor.set(0.5, 0.5)
         model.visible = false
-        // disable auto idle motion (breathing/sway) — story drives motions explicitly
+        // Disable the auto idle MOTION group (the story drives body motions
+        // explicitly) but KEEP breathing + eye-blink so the model isn't stiff.
+        // breathDepth:0.2 gives gentle head sway + body breath (matches sekai-viewer);
+        // eye-blink comes from the EyeBlink group populated in modelLoader and only
+        // runs when no motion is active, so it never fights an expression.
         try {
           const im: any = (model as any).internalModel
           const mm: any = im?.motionManager
           if (mm?.groups) mm.groups.idle = ''
           mm?.stopAllMotions?.()
-          // kill auto-breath so the model holds a steady forward pose
-          if (im?.breath?.setParameters) im.breath.setParameters([])
+          // A dedicated parallel motion manager (index 1) carries facial expressions
+          // so they layer ON TOP of body motions instead of cancelling them.
+          im?.extendParallelMotionManager?.(2)
         } catch { /* ignore */ }
         this.modelLayer.addChild(model)
-        const entry: ModelEntry = { costume, model, position: [0.5, 0.5], hidden: true, appearAt: 0 }
+        const exprNames = ((settings?.FileReferences?.Motions?.Expression as any[]) || [])
+          .map((e: any) => e?.Name).filter(Boolean)
+        const entry: ModelEntry = { costume, model, position: [0.5, 0.5], hidden: true, appearAt: 0, expressions: exprNames }
         this.applyTransform(entry)
         this.models.set(costume, entry)
         return entry
@@ -317,7 +325,17 @@ export class Live2DController {
       try { m.motion(motion, 0, 3 /* MotionPriority.FORCE */) } catch (e) { console.warn(`[live2d] motion "${motion}" failed on "${costume}"`, e) }
     }
     if (expression) {
-      try { m.expression(expression) } catch (e) { console.warn(`[live2d] expression "${expression}" failed on "${costume}"`, e) }
+      // Facials are motion3.json files, not Cubism .exp3.json expressions, so they
+      // must be PLAYED AS MOTIONS — model.expression() mis-parses a motion3 and
+      // shows the wrong face. Resolve the FacialName to its index in the
+      // "Expression" motion group and force-play it on the dedicated parallel
+      // manager[1], holding the last frame so the expression stays.
+      try {
+        const idx = entry.expressions.indexOf(expression)
+        if (idx < 0) { console.warn(`[live2d] expression "${expression}" not in costume "${costume}"`); return }
+        const pm = (m as any).internalModel?.parallelMotionManager?.[1]
+        pm?.startMotion?.('Expression', idx, 3 /* MotionPriority.FORCE */, true /* toLastFrame */)
+      } catch (e) { console.warn(`[live2d] expression "${expression}" failed on "${costume}"`, e) }
     }
   }
 

@@ -105,12 +105,19 @@ export async function loadModelSettings(costume: string): Promise<any | null> {
       for (const name of list.motions || []) {
         motionGroups[name] = [{ File: getMotionUrl(modelDir, motionBase, name), FadeInTime: 0.5, FadeOutTime: 0.5 }]
       }
+      // Facials are motion3.json (NOT Cubism .exp3.json), so register them as a
+      // single "Expression" MOTION group (resolved by Name->index and played on a
+      // parallel motion manager) and leave Cubism Expressions empty. Playing them
+      // via model.expression() mis-parses the motion3 and shows a wrong face.
       const expressions = (list.expressions || []).map((name) => ({
         Name: name,
         File: getExpressionUrl(modelDir, motionBase, name),
+        FadeInTime: 0.2,
+        FadeOutTime: 0.2,
       }))
+      ;(motionGroups as any).Expression = expressions
       ref.Motions = motionGroups
-      ref.Expressions = expressions
+      ref.Expressions = {}
       console.info(`[live2d] "${costume}": injected ${expressions.length} expressions / ${Object.keys(motionGroups).length} motions (base=${motionBase})`)
     } else {
       console.warn(`[live2d] "${costume}": no motion list (loadMotionList returned null) — model has 0 expressions/motions`)
@@ -118,6 +125,19 @@ export async function loadModelSettings(costume: string): Promise<any | null> {
   } catch (e) {
     console.warn(`[live2d] "${costume}": motion/expression injection threw`, e)
   }
+
+  // Enable natural eye-blink: the mulmotion fork only creates CubismEyeBlink when
+  // the model3 declares a non-empty EyeBlink parameter group, but sekai model3
+  // ships it empty. Populate it with the standard eye params; the update loop only
+  // blinks when no motion is active, so it never fights a playing expression.
+  const groups: any[] = Array.isArray(json.Groups) ? json.Groups : []
+  const eb = groups.find((g: any) => g && g.Name === 'EyeBlink' && g.Target === 'Parameter')
+  if (eb) {
+    if (!Array.isArray(eb.Ids) || eb.Ids.length === 0) eb.Ids = ['ParamEyeLOpen', 'ParamEyeROpen']
+  } else {
+    groups.push({ Target: 'Parameter', Name: 'EyeBlink', Ids: ['ParamEyeLOpen', 'ParamEyeROpen'] })
+  }
+  json.Groups = groups
 
   json.FileReferences = ref
   // All refs are already absolute proxied URLs; point the base at the backend
