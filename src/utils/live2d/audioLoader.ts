@@ -41,9 +41,12 @@ export async function loadVoice(
   scenarioId: string,
   voiceId: string,
   source: string,
+  chara2d?: number,
 ): Promise<LoadedAudio | null> {
   try {
-    const { url } = await api.voiceUrl(scenarioId, voiceId, source)
+    // chara2d (the SPEAKING character's Character2dId) is required for partvoice_*
+    // lines, whose clips live in a shared per-character bundle keyed by chara2d.
+    const { url } = await api.voiceUrl(scenarioId, voiceId, source, chara2d)
     if (!url) { console.warn(`[live2d] voice "${voiceId}": empty url from backend (source=${source})`); return null }
     const howl = await makeHowl(proxied(voiceToExmeaning(url)))
     console.info(`[live2d] voice "${voiceId}" loaded ok (AudioContext=${Howler.ctx?.state ?? '?'})`)

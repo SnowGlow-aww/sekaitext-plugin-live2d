@@ -40,9 +40,30 @@ export async function fetchScenario(
   if (!res.ok) throw new Error(`剧情 JSON 加载失败: HTTP ${res.status}`)
   const scenario = (await res.json()) as IScenarioData
 
+  // Card-story scenario JSON often carries a broken / Japanese internal ScenarioId
+  // (e.g. "★4冬弥・泉_前半") that does NOT match the on-CDN voice folder. The voice
+  // clips live under the scenario ASSET base name (e.g. 012043_touya01) — the last
+  // path segment of the source URL — which is what /voice/url expects. Mirror the
+  // backend StoryLoad fix here so the player's card voices resolve (downstream the
+  // controller reads scenario.ScenarioId when requesting each voice URL).
+  if (type.includes('卡面')) {
+    const base = assetBaseName(path.url)
+    if (base) scenario.ScenarioId = base
+  }
+
   return {
     scenario,
     scenarioId: scenario.ScenarioId,
     title: path.chapterTitle || path.saveTitle || scenario.ScenarioId,
   }
+}
+
+// assetBaseName extracts the scenario asset's base name (no directory, no
+// extension) from its URL, e.g.
+// ".../character/member/res012_no043/012043_touya01.asset" -> "012043_touya01".
+function assetBaseName(url: string): string {
+  let s = url.split(/[?#]/)[0]
+  s = s.substring(s.lastIndexOf('/') + 1)
+  const dot = s.lastIndexOf('.')
+  return dot >= 0 ? s.substring(0, dot) : s
 }

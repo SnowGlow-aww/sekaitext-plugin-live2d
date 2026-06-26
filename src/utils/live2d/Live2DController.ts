@@ -485,7 +485,7 @@ export class Live2DController {
             seen.add(v.VoiceId)
             const vid = v.VoiceId
             if (!this.voices.has(vid)) {
-              loadVoice(this.scenario.ScenarioId, vid, this.source)
+              loadVoice(this.scenario.ScenarioId, vid, this.source, v.Character2dId)
                 .then((a) => { if (a && !this.voices.has(vid)) this.voices.set(vid, a.howl) })
                 .catch(() => { /* preload best-effort */ })
             }
@@ -639,7 +639,7 @@ export class Live2DController {
       const vid = t.Voices[0].VoiceId
       let howl = this.voices.get(vid)
       if (!howl) {
-        const a = await loadVoice(this.scenario.ScenarioId, vid, this.source)
+        const a = await loadVoice(this.scenario.ScenarioId, vid, this.source, t.Voices[0].Character2dId)
         if (a) { this.voices.set(vid, a.howl); howl = a.howl }
       }
       if (howl) {
