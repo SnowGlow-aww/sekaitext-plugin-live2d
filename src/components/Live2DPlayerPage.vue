@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ArrowLeft, Play, Pause, SkipForward, SkipBack } from 'lucide-vue-next'
 import Live2DStage from './Live2DStage.vue'
 import { useStoryStore, StoryNavigator as getStoryNavigator } from '../host'
-import { doJump, type Jump, type JumpStage } from '../jump'
+import { doJump, type Jump, type JumpSel, type JumpStage } from '../jump'
 
 const router = useRouter()
 const route = useRoute()
@@ -81,10 +81,25 @@ watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
 // ── separate-window jump wiring ──────────────────────────────────────────────
 // In 独立窗口 mode the host opens this route in its own Tauri window and tells it
 // which line to play two ways: (a) the URL query on a COLD window
-// (#/live2d?jump=<talkIndex>&scenario=<id>&voice=<id>), and (b) a 'live2d:jump'
-// Tauri event for an ALREADY-OPEN window. Both funnel through the SAME doJump as
-// the docked panel (../jump.ts), so behaviour is identical across modes.
+//   #/live2d?jump=<talkIndex>&voice=<id>&type=&sort=&index=&chapter=&source=
+// and (b) a 'live2d:jump' Tauri event (full Jump payload) for an ALREADY-OPEN
+// window. A 独立窗口 is a FRESH JS context with an EMPTY story store, so the host
+// carries its full selection in jump.sel; we write it into the host story store
+// BEFORE seeking so <Live2DStage :source> + doJump's play() args resolve. Both
+// paths funnel through the SAME doJump as the docked panel (../jump.ts).
+function applySel(sel?: JumpSel) {
+  if (!sel) return
+  // Writable Pinia setup-store refs on the host story store. Guard NaN/empty so a
+  // missing param never blanks a field.
+  if (sel.type) story.selectedType = sel.type
+  if (sel.sort != null) story.selectedSort = sel.sort
+  if (sel.index != null) story.selectedIndex = sel.index
+  if (typeof sel.chapter === 'number' && !Number.isNaN(sel.chapter)) story.selectedChapter = sel.chapter
+  if (sel.source) story.selectedSource = sel.source
+}
+
 async function handleJump(jump: Jump) {
+  applySel(jump.sel) // populate the (possibly empty) host store before doJump reads it
   await doJump({
     stage: stageRef.value as unknown as JumpStage,
     story,
@@ -95,28 +110,54 @@ async function handleJump(jump: Jump) {
 }
 
 let unlisten: (() => void) | null = null
+let cancelled = false
 onMounted(async () => {
+  // (b) FIRST register the live event listener — BEFORE the ~1-2s cold load below
+  // — so jumps emitted during the load aren't dropped (Tauri doesn't buffer
+  // events). Tauri-only; wrapped so a non-Tauri/web-dev build doesn't throw.
+  // FIX D: `cancelled` closes the listener if we unmount before the async
+  // import/listen resolves (onBeforeUnmount runs synchronously and would no-op
+  // while `unlisten` is still null, leaking the later-resolved listener).
+  try {
+    const { listen } = await import('@tauri-apps/api/event')
+    const u = await listen('live2d:jump', (e: { payload: Jump }) => { void handleJump(e.payload) })
+    if (cancelled) u()
+    else unlisten = u
+  } catch { /* non-Tauri (web dev): no event bus, query path still works */ }
+  if (cancelled) return
+
   // (a) Cold window: self-seek from the URL query so no event is needed.
   const q = route.query as Record<string, string | string[] | undefined>
-  const raw = Array.isArray(q.jump) ? q.jump[0] : q.jump
+  const s = (k: string): string | undefined => {
+    const v = q[k]
+    return Array.isArray(v) ? v[0] : v
+  }
+  const raw = s('jump')
   if (raw != null && raw !== '') {
     const talkIndex = parseInt(raw, 10)
     if (!Number.isNaN(talkIndex)) {
+      const type = s('type')
+      // Build sel only when the host carried a selection (type present). chapter is
+      // a number; the rest are strings (sort/index may legitimately be empty).
+      const sel: JumpSel | undefined = type
+        ? {
+            type,
+            sort: s('sort') ?? '',
+            index: s('index') ?? '',
+            chapter: parseInt(s('chapter') ?? '', 10),
+            source: s('source') ?? '',
+          }
+        : undefined
       await handleJump({
-        scenarioId: typeof q.scenario === 'string' ? q.scenario : undefined,
-        voiceId: typeof q.voice === 'string' ? q.voice : undefined,
+        scenarioId: s('scenario'),
+        voiceId: s('voice') || undefined,
         talkIndex,
+        sel,
       })
     }
   }
-  // (b) Already-open window: react to the host's live event. Tauri-only — wrapped
-  // so a non-Tauri/web-dev build doesn't throw on the missing API.
-  try {
-    const { listen } = await import('@tauri-apps/api/event')
-    unlisten = await listen('live2d:jump', (e: { payload: Jump }) => { void handleJump(e.payload) })
-  } catch { /* non-Tauri (web dev): no event bus, query path still works */ }
 })
-onBeforeUnmount(() => { unlisten?.(); unlisten = null })
+onBeforeUnmount(() => { cancelled = true; unlisten?.(); unlisten = null })
 </script>
 
 <template>

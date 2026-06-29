@@ -457,6 +457,11 @@ export class Live2DController {
 
   // ---- audio ----
   private playBgmTrack(howl: Howl) {
+    // BGM is loaded fire-and-forget (loadBgm(...).then(...) in init/seek), so this
+    // can resolve AFTER the controller was destroyed (e.g. a superseded play()).
+    // Without this guard the looping howl would never be tracked for unload and
+    // would play forever — the orphaned-BGM leak. Stop it immediately instead.
+    if (this.aborted) { howl.stop(); howl.unload(); return }
     if (this.bgm) this.bgm.stop()
     this.bgm = howl
     howl.loop(true)

@@ -62,23 +62,38 @@ watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
 // same line still fire. lastNonce stops a re-run after consumeJump() (which nulls
 // pendingJump) from looping, and de-dupes the onMounted + watcher paths.
 let lastNonce = -1
+// Serialise jumps: a single doJump (which can take ~1-2s when it triggers a fresh
+// load) must finish before the next starts, or two overlapping play()/seek chains
+// would race. While one runs, newer jumps just update dock.pendingJump; when the
+// current finishes we drain to the NEWEST pending jump (loop) so none is lost.
+let jumpInFlight = false
 async function applyPendingJump() {
-  const j = dock.pendingJump
-  if (!j || j.nonce === lastNonce) return
+  if (jumpInFlight) return // a drain loop is already running; it will pick up the newest
   // The stage may not be mounted on the first synchronous watcher tick (the dock
   // becomes visible and publishes the jump in the same flush). onMounted retries.
   if (!stageRef.value) return
-  lastNonce = j.nonce
+  jumpInFlight = true
   try {
-    await doJump({
-      stage: stageRef.value as unknown as JumpStage,
-      story,
-      loadedKey,
-      isActive: () => active.value,
-      jump: j,
-    })
+    while (true) {
+      const j = dock.pendingJump
+      if (!j || j.nonce === lastNonce) break // nothing newer than what we've applied
+      lastNonce = j.nonce
+      try {
+        await doJump({
+          stage: stageRef.value as unknown as JumpStage,
+          story,
+          loadedKey,
+          isActive: () => active.value,
+          jump: j,
+        })
+      } catch (e) {
+        console.warn('[live2d] applyPendingJump failed', e)
+      }
+      // Only clear if no newer jump arrived during doJump; otherwise loop to apply it.
+      if (dock.pendingJump && dock.pendingJump.nonce === lastNonce) dock.consumeJump()
+    }
   } finally {
-    dock.consumeJump()
+    jumpInFlight = false
   }
 }
 watch(() => dock.pendingJump?.nonce, () => { void applyPendingJump() })

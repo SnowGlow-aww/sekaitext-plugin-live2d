@@ -19,11 +19,26 @@
 //     after a story edit), seek to the NEAREST in-range line (clamp talkIndex+1)
 //     and console.warn rather than failing the jump.
 
+// The host's full story-selection snapshot, carried on a jump so a 独立窗口 (a
+// fresh JS context with an EMPTY story store) can populate its store and resolve
+// stage.play()/source. type/sort/index/source are strings; chapter is a number.
+export interface JumpSel {
+  type: string
+  sort: string
+  index: string
+  chapter: number
+  source: string
+}
+
 export interface Jump {
   scenarioId?: string
   talkIndex: number
   voiceId?: string
   nonce?: number
+  // Present for separate-window jumps (and harmlessly for docked). When set, the
+  // plugin writes it into the host story store BEFORE seeking — see
+  // Live2DPlayerPage.applySel + the M3 SEPARATE-WINDOW JUMP CONTRACT.
+  sel?: JumpSel
 }
 
 // The minimal slice of the Live2DStage `defineExpose` surface that doJump needs.

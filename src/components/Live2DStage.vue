@@ -50,6 +50,14 @@ let stepping = false
 let busy = false
 const history: number[] = [] // checkpoints we departed FROM, for 上一步
 
+// Re-entrancy / generation guard for play(). A 2nd concurrent play() (a 2nd editor
+// jump during the ~1-2s load, or a double-click) would otherwise build a 2nd
+// Live2DController and overwrite controller.value, orphaning the first — whose
+// looping BGM (and PIXI models/ticker) would leak. Each play() captures
+// `++playGen`; after every await it bails if a newer call has since started,
+// destroying any controller it already built so its BGM/howl is stopped.
+let playGen = 0
+
 function initApp() {
   if (app.value || !canvasRef.value) return
   const a = new PIXI.Application({
@@ -112,16 +120,25 @@ function ensureSized(): Promise<void> {
 
 async function play(type: string, sort: string, index: string, chapter: number) {
   if (!app.value || !root.value) return
+  // Claim a generation. A later play() bumps playGen; after each await below we
+  // bail when myGen is stale so overlapping calls converge to the latest with no
+  // orphaned controller. A bailing call leaves `loading` to the newer call (which
+  // already set it true) and only the current owner clears it in `finally`.
+  const myGen = ++playGen
   loading.value = true
   // Ensure the renderer has a real size BEFORE the model loads, or Cubism's
   // clipping-mask buffer is allocated at 0×0 and masked parts render as a pink
   // rectangle (only seen in the embedded dock — see ensureSized).
   await ensureSized()
+  if (myGen !== playGen) return // superseded before we built anything
   errorMsg.value = ''
   dialog.value = null
   telop.value = null
   fullScreenText.value = null
   history.length = 0
+  // Holds the controller we construct so a bail AFTER construction can destroy it
+  // (stopping its BGM/howl) instead of leaking it.
+  let ctrl: Live2DController | null = null
   try {
     controller.value?.destroy()
     root.value.removeChildren()
@@ -131,7 +148,8 @@ async function play(type: string, sort: string, index: string, chapter: number) 
     root.value.addChild(bgLayer, modelLayer)
 
     const { scenario } = await fetchScenario(type, sort, index, chapter, props.source)
-    const ctrl = new Live2DController(scenario, app.value, bgLayer, modelLayer, props.source, {
+    if (myGen !== playGen) return // superseded during scenario fetch; nothing to destroy yet
+    ctrl = new Live2DController(scenario, app.value, bgLayer, modelLayer, props.source, {
       onDialog: (l) => { dialog.value = l; if (l) telop.value = null },
       onProgress: (c, t) => emit('progress', c, t),
       onTelop: (t) => { telop.value = t },
@@ -139,8 +157,10 @@ async function play(type: string, sort: string, index: string, chapter: number) 
     })
     ctrl.setVoiceVolume(props.voiceVolume)
     ctrl.setBgmVolume(props.bgmVolume)
-    controller.value = ctrl
     await ctrl.init()
+    if (myGen !== playGen) { ctrl.destroy(); ctrl = null; return } // superseded during init: stop its BGM
+    // Only now is this controller the live one.
+    controller.value = ctrl
     // Start before the first snippet so the opening step lands ON snippet 0
     // (e.g. the first location banner) instead of skipping past it.
     checkpoint = -1
@@ -153,10 +173,12 @@ async function play(type: string, sort: string, index: string, chapter: number) 
     try { await runStep() } finally { busy = false }
     if (props.autoPlay) void autoLoop()
   } catch (e: any) {
+    // A superseded call's failure must not clobber the newer call's UI.
+    if (myGen !== playGen) { ctrl?.destroy(); return }
     errorMsg.value = e?.message || String(e)
     emit('error', errorMsg.value)
   } finally {
-    loading.value = false
+    if (myGen === playGen) loading.value = false
   }
 }
 
