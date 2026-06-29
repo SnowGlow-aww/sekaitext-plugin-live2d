@@ -67,18 +67,56 @@ function initApp() {
 
 function fitStage() {
   if (!app.value || !root.value || !wrapRef.value) return
-  const w = wrapRef.value.clientWidth
-  const h = wrapRef.value.clientHeight
-  app.value.renderer.resize(w, h)
-  const scale = Math.min(w / STAGE_W, h / STAGE_H)
+  const cw = wrapRef.value.clientWidth
+  const ch = wrapRef.value.clientHeight
+  if (cw <= 0 || ch <= 0) return
+  const scale = Math.min(cw / STAGE_W, ch / STAGE_H)
+  // Size the canvas to EXACTLY the scaled 1920×1080 stage (NOT the container) and
+  // let the flex wrap center it. The WebGL viewport edge then clips anything
+  // outside the frame — e.g. character legs that extend below the background —
+  // the same way the full-screen player's canvas edge does. A PIXI mask does NOT
+  // work here: Cubism models render through their own GL path and ignore
+  // container masks (the background sprite clipped, the model did not).
+  app.value.renderer.resize(Math.round(STAGE_W * scale), Math.round(STAGE_H * scale))
   root.value.scale.set(scale)
-  root.value.x = (w - STAGE_W * scale) / 2
-  root.value.y = (h - STAGE_H * scale) / 2
+  root.value.x = 0
+  root.value.y = 0
+}
+
+// Resolve once the wrap element has a real (non-zero) size, then fit the stage.
+// The EMBEDDED dock can mount this component with a 0×0 container (the dock turns
+// visible and play() fires in the same flush, before layout). Loading the model
+// while the renderer is 0×0 makes Cubism allocate its clipping-mask buffer at zero
+// size, so masked parts (face/cheeks) later render as a solid magenta rectangle.
+// The full-screen player already has a sized container, so this resolves at once.
+function ensureSized(): Promise<void> {
+  return new Promise((resolve) => {
+    let tries = 0
+    const check = () => {
+      const el = wrapRef.value
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+        fitStage()
+        resolve()
+      } else if (tries++ > 120) {
+        // ~2s safety cap: proceed anyway rather than hang if the container never
+        // gets a size (e.g. play() somehow invoked while the dock is hidden).
+        fitStage()
+        resolve()
+      } else {
+        requestAnimationFrame(check)
+      }
+    }
+    check()
+  })
 }
 
 async function play(type: string, sort: string, index: string, chapter: number) {
   if (!app.value || !root.value) return
   loading.value = true
+  // Ensure the renderer has a real size BEFORE the model loads, or Cubism's
+  // clipping-mask buffer is allocated at 0×0 and masked parts render as a pink
+  // rectangle (only seen in the embedded dock — see ensureSized).
+  await ensureSized()
   errorMsg.value = ''
   dialog.value = null
   telop.value = null
@@ -248,6 +286,15 @@ defineExpose({
     controller.value?.setVoiceVolume(v)
     controller.value?.setBgmVolume(b)
   },
+  // ── editor-jump resolution (used by ../jump.ts doJump) ──────────────────────
+  // Resolve a clicked editor line to this player's 1-based dialog line. Both
+  // return -1 when unresolved (or no story loaded) so the caller can fall back.
+  /** PREFERRED: exact voice-clip-id match. */
+  lineForVoiceId: (voiceId: string): number => controller.value?.dialogLineForVoiceId(voiceId) ?? -1,
+  /** FALLBACK: 0-based index among Talk lines → 1-based dialog line. */
+  lineForTalkIndex: (talkIndex: number): number => controller.value?.dialogLineForTalkIndex(talkIndex) ?? -1,
+  /** Total dialog lines of the loaded story (0 if none), for clamping. */
+  dialogLineCount: (): number => controller.value?.dialogLineCount ?? 0,
 })
 
 let ro: ResizeObserver | null = null
@@ -304,11 +351,20 @@ onBeforeUnmount(() => {
   height: 100%;
   overflow: hidden;
   background: #000;
+  /* Center the (stage-sized) canvas so non-16:9 docks letterbox cleanly and the
+     canvas edge clips model overflow. Overlays stay position:absolute → anchored
+     to this wrap, not the flex flow. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .l2d-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  /* Sized by PIXI (renderer.resize in fitStage) to the scaled stage; the flex
+     wrap centers it. Do NOT force 100% — that would stretch it back over the
+     letterbox and re-expose the model overflow. */
+  max-width: 100%;
+  max-height: 100%;
 }
 
 /* telop —— 居中横幅字 */

@@ -1,0 +1,170 @@
+<script setup lang="ts">
+// EMBEDDABLE Live2D panel for the editor's docked region. The host frame
+// (src/components/live2d/Live2DDock.vue) supplies the header / close button /
+// resize handle and SIZES our container, so this component keeps its own chrome
+// minimal (a slim transport bar) and MUST fill its parent — never h-screen.
+//
+// It mirrors Live2DPlayerPage's stage wiring but is driven by the shared dock
+// store: when the editor's "在 Live2D 播放" button publishes a jump, we apply it
+// here (see ../jump.ts doJump).
+import { ref, computed, watch, onMounted } from 'vue'
+import { Play, Pause, SkipForward, SkipBack } from 'lucide-vue-next'
+import Live2DStage from './Live2DStage.vue'
+import { useStoryStore, host } from '../host'
+import { doJump, selKeyOf, type JumpStage } from '../jump'
+
+const story = useStoryStore()
+// The SAME reactive store instance the host + editor use, reached through the
+// bridge (no shared import → no second singleton).
+const dock = host().stores.live2dDock()
+
+const stageRef = ref<InstanceType<typeof Live2DStage> | null>(null)
+const voiceVolume = ref(1)
+const bgmVolume = ref(0.6)
+const paused = ref(false)
+const active = ref(false) // a story is loaded and not yet ended
+const progress = ref({ current: 0, total: 0 })
+
+// Identity of the currently-selected story; reload when it changes (same rule as
+// Live2DPlayerPage). loadedKey is shared with doJump so a jump for the already-
+// loaded story seeks in place instead of reloading.
+const selKey = computed(() => selKeyOf(story))
+const loadedKey = ref('')
+
+function playSelected() {
+  if (!story.selectedType || story.selectedChapter < 0) return
+  loadedKey.value = selKey.value
+  void stageRef.value?.play(
+    story.selectedType,
+    story.selectedSort,
+    story.selectedIndex,
+    story.selectedChapter,
+  )
+}
+// One play/pause button: load (new/changed selection) or toggle pause/resume.
+function mainAction() {
+  if (!active.value || selKey.value !== loadedKey.value) playSelected()
+  else stageRef.value?.togglePause()
+}
+const mainIsPause = computed(() => active.value && !paused.value && selKey.value === loadedKey.value)
+const canStep = computed(() => active.value && !paused.value)
+
+function onLoaded() { active.value = true }
+function onError() { active.value = false }
+function onEnded() { active.value = false }
+function onProgress(c: number, t: number) { progress.value = { current: c, total: t } }
+function onPauseChange(p: boolean) { paused.value = p }
+
+watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
+
+// ── editor-driven jumps ──────────────────────────────────────────────────────
+// Watch the shared dock store's pendingJump BY NONCE so repeated jumps to the
+// same line still fire. lastNonce stops a re-run after consumeJump() (which nulls
+// pendingJump) from looping, and de-dupes the onMounted + watcher paths.
+let lastNonce = -1
+async function applyPendingJump() {
+  const j = dock.pendingJump
+  if (!j || j.nonce === lastNonce) return
+  // The stage may not be mounted on the first synchronous watcher tick (the dock
+  // becomes visible and publishes the jump in the same flush). onMounted retries.
+  if (!stageRef.value) return
+  lastNonce = j.nonce
+  try {
+    await doJump({
+      stage: stageRef.value as unknown as JumpStage,
+      story,
+      loadedKey,
+      isActive: () => active.value,
+      jump: j,
+    })
+  } finally {
+    dock.consumeJump()
+  }
+}
+watch(() => dock.pendingJump?.nonce, () => { void applyPendingJump() })
+// Apply the jump that OPENED the dock (pendingJump was set before we mounted).
+onMounted(() => { void applyPendingJump() })
+</script>
+
+<template>
+  <div class="l2d-dock w-full h-full flex flex-col min-h-0 min-w-0 bg-base-100">
+    <!-- transport bar (host frame provides title/close/resize). Two rows so both
+         volume sliders stay usable even when the dock is narrow. -->
+    <div class="l2d-bar flex flex-col gap-1 px-2 py-1 border-b border-base-300 shrink-0">
+      <!-- row 1: playback controls + progress -->
+      <div class="flex items-center gap-1">
+        <button @click="stageRef?.prev()" :disabled="!canStep" class="btn btn-ghost btn-xs btn-square" title="上一句">
+          <SkipBack :size="15" />
+        </button>
+        <button @click="mainAction" class="btn btn-primary btn-xs btn-square" :title="mainIsPause ? '暂停' : '播放'">
+          <component :is="mainIsPause ? Pause : Play" :size="15" />
+        </button>
+        <button @click="stageRef?.advance()" :disabled="!canStep" class="btn btn-ghost btn-xs btn-square" title="下一句">
+          <SkipForward :size="15" />
+        </button>
+        <span v-if="progress.total" class="text-xs opacity-60 tabular-nums ml-auto shrink-0">
+          {{ progress.current }}/{{ progress.total }}
+        </span>
+      </div>
+      <!-- row 2: voice + BGM volume (mirrors the full-screen player) -->
+      <div class="flex items-center gap-2">
+        <span class="l2d-vol-label shrink-0" title="语音音量">语音</span>
+        <input v-model.number="voiceVolume" type="range" min="0" max="1" step="0.05" class="range range-primary range-xs flex-1" />
+        <span class="l2d-vol-label shrink-0" title="BGM 音量">BGM</span>
+        <input v-model.number="bgmVolume" type="range" min="0" max="1" step="0.05" class="range range-primary range-xs flex-1" />
+      </div>
+    </div>
+
+    <!-- stage fills the rest -->
+    <div class="flex-1 min-h-0 min-w-0">
+      <Live2DStage
+        ref="stageRef"
+        :source="story.selectedSource"
+        :auto-play="false"
+        :voice-volume="voiceVolume"
+        :bgm-volume="bgmVolume"
+        @loaded="onLoaded"
+        @error="onError"
+        @progress="onProgress"
+        @ended="onEnded"
+        @pause-change="onPauseChange"
+      />
+    </div>
+  </div>
+</template>
+
+<style scoped>
+/* The host's Tailwind v4 purges classes it doesn't itself use, so the plugin
+   self-provides every utility it relies on. Base component classes (btn / range)
+   still come from the host's global @layer components. */
+.w-full { width: 100%; }
+.h-full { height: 100%; }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1 1 0%; }
+.items-center { align-items: center; }
+.min-h-0 { min-height: 0; }
+.min-w-0 { min-width: 0; }
+.shrink-0 { flex-shrink: 0; }
+.gap-1 { gap: 0.25rem; }
+.gap-2 { gap: 0.5rem; }
+.px-2 { padding-inline: 0.5rem; }
+.py-1 { padding-block: 0.25rem; }
+.ml-1 { margin-left: 0.25rem; }
+.ml-auto { margin-left: auto; }
+.w-16 { width: 4rem; }
+.border-b { border-bottom-width: 1px; border-bottom-style: solid; }
+.text-xs { font-size: 0.75rem; line-height: 1rem; }
+.opacity-60 { opacity: 0.6; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.l2d-vol-label { font-size: 0.7rem; line-height: 1; opacity: 0.65; }
+
+.bg-base-100 { background-color: var(--color-base-100); }
+.border-base-300 { border-color: var(--color-base-300); }
+
+/* 方形图标按钮：宽=高、去横向内边距（btn-xs 高度约 1.5rem） */
+.btn-square { width: 1.5rem; height: 1.5rem; padding-inline: 0; }
+
+/* 进度滑条主题色：DaisyUI 的填充用 currentColor */
+.range-primary { color: var(--color-primary); }
+</style>

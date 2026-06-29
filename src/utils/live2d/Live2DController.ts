@@ -69,6 +69,10 @@ export class Live2DController {
   aborted = false
   silent = false // during seekTo: skip voice + instant moves
   currentVoice: Howl | null = null
+  // Per-clip base volume of the currently-playing voice (its TalkData Volume,
+  // before the user's voiceVolume multiplier) so the volume slider can update the
+  // LIVE voice accurately, not just the next line.
+  currentVoiceBase = 1
   // callbacks fired when the current step is aborted (skip / next click)
   abortCbs = new Set<() => void>()
   // models currently mid-load, so concurrent appears don't double-load
@@ -164,6 +168,43 @@ export class Live2DController {
   }
 
   get dialogLineCount(): number { return this.totalTalks }
+
+  /** Map a voice clip id to the 1-based dialog-line number of the Talk snippet
+   *  that plays it. Scans Snippets in order; for each Talk, checks its TalkData's
+   *  Voices for an EXACT VoiceId match and returns that snippet's dialog line
+   *  (talkCountUpTo[i]). Voice ids are unique per spoken line, so this is the
+   *  PREFERRED jump anchor — no index arithmetic. Returns -1 if no Talk
+   *  references the voice id. */
+  dialogLineForVoiceId(voiceId: string): number {
+    if (!voiceId) return -1
+    const snippets = this.scenario.Snippets || []
+    for (let i = 0; i < snippets.length; i++) {
+      const s = snippets[i]
+      if (s.Action !== SnippetAction.Talk) continue
+      const t = this.scenario.TalkData?.[s.ReferenceIndex]
+      if (t?.Voices?.some((v) => v.VoiceId === voiceId)) return this.talkCountUpTo[i]
+    }
+    return -1
+  }
+
+  /** Map a 0-based talkIndex (index among Talk snippets ONLY, in display order —
+   *  the editor's numbering of spoken lines) to the 1-based dialog-line number
+   *  this controller uses. They differ: dialog lines ALSO count scene-effect rows
+   *  (location / scene / choice — SpecialEffect types 8/18/23), so a plain +1
+   *  would drift. We walk Snippets counting Talk snippets; the talkIndex-th Talk's
+   *  talkCountUpTo value is its dialog line. Returns -1 if talkIndex is out of
+   *  range (no such Talk). */
+  dialogLineForTalkIndex(talkIndex: number): number {
+    if (talkIndex < 0) return -1
+    const snippets = this.scenario.Snippets || []
+    let count = 0
+    for (let i = 0; i < snippets.length; i++) {
+      if (snippets[i].Action !== SnippetAction.Talk) continue
+      if (count === talkIndex) return this.talkCountUpTo[i]
+      count++
+    }
+    return -1
+  }
 
   /** For a landed talk snippet, find the snippet to start replay from so a voice
    *  actually plays: if `end` is a talk that has its own voice, return it; if it
@@ -513,7 +554,7 @@ export class Live2DController {
     }
   }
 
-  setVoiceVolume(v: number) { this.voiceVolume = v }
+  setVoiceVolume(v: number) { this.voiceVolume = v; this.currentVoice?.volume(this.currentVoiceBase * v) }
   setBgmVolume(v: number) { this.bgmVolume = v; this.bgm?.volume(v) }
 
   /** Rebuild scene state from the start up to `target`. Snippets before the
@@ -662,10 +703,11 @@ export class Live2DController {
       }
       if (howl) {
         this.currentVoice = howl
+        this.currentVoiceBase = t.Voices[0].Volume ?? 1
         const costumes = (t.TalkCharacters || [])
           .map((c) => this.costumeOf(c.Character2dId))
           .filter((c): c is string => !!c)
-        const vol = (t.Voices[0].Volume ?? 1) * this.voiceVolume
+        const vol = this.currentVoiceBase * this.voiceVolume
         if (costumes.length && t.LipSync === 1) this.speak(costumes, howl, vol)
         else {
           // Not a lip-synced line (monologue / no speaker): make sure nobody is
