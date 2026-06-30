@@ -78,11 +78,20 @@ export async function loadModelSettings(costume: string): Promise<any | null> {
   const modelPath = m.modelPath
   const dir = getModelDir(modelPath)
 
-  // 1. exmeaning buildmodeldata -> model3 base name
+  // 1. exmeaning buildmodeldata. Its Moc3FileName is the AUTHORITATIVE base name for
+  //    the exmeaning body files (model3/moc/textures/physics): it carries the correct
+  //    REVISION (e.g. ...t08). model_list's modelFile can name an OLDER revision
+  //    (...t06/t01) — preferring it outright 404s those ~100 models — but it DOES carry
+  //    the correct CASE (April2026 mains: "April" in buildmodeldata, lowercase "april"
+  //    files). So keep Moc3FileName's revision, and only borrow modelFile's case when
+  //    the two differ by case alone.
   const bmdRes = await fetch(getBuildModelDataUrl(modelPath))
   if (!bmdRes.ok) throw new Error(`buildmodeldata fetch failed: HTTP ${bmdRes.status}`)
   const bmd = (await bmdRes.json()) as BuildModelData
-  const baseName = bmd.Moc3FileName.replace(/\.moc3(\.bytes)?$/, '')
+  const mfBase = m.modelFile?.replace(/\.model3(\.json)?$/, '') || ''
+  const mocBase = bmd.Moc3FileName.replace(/\.moc3(\.bytes)?$/, '')
+  const baseName =
+    !mocBase ? mfBase : mfBase && mfBase.toLowerCase() === mocBase.toLowerCase() ? mfBase : mocBase
 
   // 2. exmeaning model3 (standard format, no .json ext)
   const res = await fetch(proxied(`${dir}${baseName}.model3`))
@@ -91,9 +100,18 @@ export async function loadModelSettings(costume: string): Promise<any | null> {
 
   // 3. rewrite body file refs to proxied exmeaning URLs
   const ref = json.FileReferences ?? {}
-  if (ref.Moc) ref.Moc = proxied(dir + ref.Moc)
-  if (Array.isArray(ref.Textures)) ref.Textures = ref.Textures.map((t: string) => proxied(dir + t))
-  if (ref.Physics) ref.Physics = proxied(dir + ref.Physics.replace(/\.physics3\.json$/, '.physics3'))
+  // The model3's FileReferences can declare a different CASE than the files that
+  // actually exist (e.g. April2026 mains: "April" inside the model3, but the files
+  // are "april"). baseName (from model_list modelFile) is the authoritative case, so
+  // rebuild moc/physics from it and swap the texture path prefix — fixes both the CDN
+  // fetch (online) and the local-mirror lookup (offline).
+  const refBase = (ref.Moc ?? `${baseName}.moc3`).replace(/\.moc3$/, '')
+  ref.Moc = proxied(`${dir}${baseName}.moc3`)
+  if (Array.isArray(ref.Textures))
+    ref.Textures = ref.Textures.map((t: string) =>
+      proxied(dir + (refBase && refBase !== baseName ? t.replace(refBase, baseName) : t)),
+    )
+  if (ref.Physics) ref.Physics = proxied(`${dir}${baseName}.physics3`)
 
   // 4. inject motions/expressions from sekai.best (full motion3.json). Each motion
   // becomes its own group (group name = clip name) -> model.motion(name, 0).

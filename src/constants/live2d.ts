@@ -14,11 +14,12 @@ export const SEKAI_BEST_LIVE2D = 'https://storage.sekai.best/sekai-live2d-assets
 export const EXMEANING_BASE = 'https://storage2.exmeaning.com/sekai-jp-assets'
 
 // Backend origin. In the packaged Tauri app there is no vite dev-proxy and
-// location.origin is `tauri://localhost`, so a relative `/api/...` URL resolves
-// against the custom protocol and WebKit throws "The string did not match the
-// expected pattern". Always target the Go sidecar's absolute address, matching
-// api/client.ts's BASE_URL.
-export const BACKEND_ORIGIN = 'http://localhost:9800'
+// location.origin is the custom scheme (e.g. `sekai://localhost`), so a relative
+// `/api/...` URL resolves against it and WebKit throws "The string did not match
+// the expected pattern". Read the origin Rust injects as `window.__SEKAI_ORIGIN__`
+// (release = `sekai://localhost`; dev = `http://localhost:9800`), matching
+// api/client.ts's BASE_URL. Fall back to the dev TCP address if unset.
+export const BACKEND_ORIGIN = (window as any).__SEKAI_ORIGIN__ || 'http://localhost:9800'
 
 /** Wrap an upstream CDN URL so it is fetched through the local backend proxy. */
 export function proxied(url: string): string {
