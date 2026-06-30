@@ -102,12 +102,13 @@ async function syncLive2D() {
         <div v-if="syncText" class="text-xs text-[var(--color-text-secondary)] mt-0.5">{{ syncText }}</div>
       </div>
       <div class="flex items-center gap-2">
-        <label class="text-xs text-[var(--color-text-secondary)] whitespace-nowrap">并行</label>
+        <label class="text-xs text-[var(--color-text-secondary)] whitespace-nowrap">同时下载文件数</label>
         <input
           type="number" min="1" max="50" step="1"
           v-model.number="concurrency" @change="clampConcurrency"
-          :disabled="syncing" title="同时下载的模型数（1–50）"
-          class="input input-bordered input-sm l2d-num text-center"
+          :disabled="syncing" title="同时下载的文件数（1–50）"
+          class="input input-bordered input-sm text-center"
+          style="width: 4.5rem !important; flex: 0 0 auto;"
         />
         <button @click="syncLive2D" :disabled="syncing" class="btn btn-outline btn-sm whitespace-nowrap">
           {{ syncing ? '下载中…' : '检查并下载新素材' }}
@@ -123,6 +124,5 @@ async function syncLive2D() {
 .mt-3 { margin-top: 0.75rem; }
 .gap-2 { gap: 0.5rem; }
 .text-center { text-align: center; }
-.l2d-num { width: 3.75rem; }
 .text-\[var\(--color-text-secondary\)\] { color: var(--color-text-secondary); }
 </style>
