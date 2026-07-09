@@ -208,7 +208,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "auto-timing: publish v${VERSION}"
+          git commit -m "live2d: publish v${VERSION}"
 
           # Push with bounded retry: the per-ref concurrency group means a
           # different tag (or another repo's publish) can advance main between
