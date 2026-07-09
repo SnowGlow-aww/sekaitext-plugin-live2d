@@ -76,6 +76,16 @@ function jumpToLine() {
   jumpInput.value = null
 }
 
+// Draggable progress bar (mirrors Live2DPlayerPage): local scrub value while
+// dragging, seek only on release — seekTo rebuilds the scene, too heavy per pixel.
+const scrub = ref<number | null>(null)
+function onScrub(e: Event) { scrub.value = Number((e.target as HTMLInputElement).value) }
+function commitScrub(e: Event) {
+  const v = Math.round(Number((e.target as HTMLInputElement).value))
+  scrub.value = null
+  if (v >= 1) void stageRef.value?.seekToLine(v)
+}
+
 watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
 
 // ── editor-driven jumps ──────────────────────────────────────────────────────
@@ -153,14 +163,23 @@ onMounted(() => { void applyPendingJump() })
       </div>
       <!-- row 3: progress bar + index jump input (第 N / 总 句) -->
       <div v-if="progress.total" class="flex items-center gap-1.5">
-        <progress class="progress progress-primary flex-1" :value="progress.current" :max="progress.total" />
+        <input
+          type="range"
+          min="1"
+          :max="progress.total"
+          :value="scrub ?? progress.current"
+          @input="onScrub"
+          @change="commitScrub"
+          class="range range-primary range-xs flex-1"
+          title="拖动跳转到任意句"
+        />
         <span class="text-xs opacity-60 tabular-nums shrink-0">第</span>
         <input
           v-model.number="jumpInput"
           type="number"
           min="1"
           :max="progress.total"
-          :placeholder="String(progress.current)"
+          :placeholder="String(scrub ?? progress.current)"
           class="input input-bordered input-xs w-14 text-center tabular-nums"
           @keyup.enter="jumpToLine"
           @blur="jumpToLine"

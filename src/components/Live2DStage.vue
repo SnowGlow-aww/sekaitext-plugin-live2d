@@ -125,6 +125,27 @@ async function play(type: string, sort: string, index: string, chapter: number) 
   // orphaned controller. A bailing call leaves `loading` to the newer call (which
   // already set it true) and only the current owner clears it in `finally`.
   const myGen = ++playGen
+  // Retire the old story SYNCHRONOUSLY, before any await: stop its autoplay loop
+  // (playing=false fails the loop condition), abort + destroy its controller (a
+  // bail at the gen check below must not leak its looping BGM), and take it off
+  // `controller` so a stale runStep/autoLoop still in flight fails the identity
+  // guards instead of writing the old story's checkpoint into the new one.
+  playing.value = false
+  paused.value = false
+  const old = controller.value
+  controller.value = null
+  if (old) {
+    try { old.skip() } catch { /* ignore */ }
+    try { old.destroy() } catch (e) { console.warn('[live2d] destroy previous controller failed', e) }
+  }
+  stepping = false
+  busy = false
+  // The pause path stops the SHARED app ticker (freezing rendering). If the old
+  // story was left paused — leaving the player page auto-pauses — a new story
+  // would build underneath a stopped renderer and the canvas would keep showing
+  // the OLD story's last frame ("stuck in the previous scene"). Always restart.
+  app.value.ticker.start()
+  emit('pauseChange', false)
   loading.value = true
   // Ensure the renderer has a real size BEFORE the model loads, or Cubism's
   // clipping-mask buffer is allocated at 0×0 and masked parts render as a pink
@@ -140,7 +161,6 @@ async function play(type: string, sort: string, index: string, chapter: number) 
   // (stopping its BGM/howl) instead of leaking it.
   let ctrl: Live2DController | null = null
   try {
-    controller.value?.destroy()
     root.value.removeChildren()
 
     const bgLayer = new PIXI.Container()
@@ -183,11 +203,17 @@ async function play(type: string, sort: string, index: string, chapter: number) 
 }
 
 async function runStep() {
-  if (!controller.value) return
+  const ctrl = controller.value
+  if (!ctrl) return
   stepping = true
   try {
-    if (checkpoint >= 0) history.push(checkpoint) // don't record the pre-start sentinel (-1)
-    const next = await controller.value.stepUntilCheckpoint(checkpoint)
+    const departed = checkpoint
+    const next = await ctrl.stepUntilCheckpoint(checkpoint)
+    // A play() may have retired this controller while the step was in flight;
+    // its result belongs to the dead story — dropping it keeps the NEW story's
+    // checkpoint/history/ended state intact.
+    if (controller.value !== ctrl) return
+    if (departed >= 0) history.push(departed) // don't record the pre-start sentinel (-1)
     if (next === -1) {
       playing.value = false
       emit('ended')
@@ -226,17 +252,20 @@ async function next() {
 }
 
 /** Autoplay: after a step settles, wait briefly then take the next, until the
- *  user turns autoplay off or the scenario ends. */
+ *  user turns autoplay off or the scenario ends. Bound to the controller it was
+ *  started for: switching stories retires it — otherwise the old loop would keep
+ *  stepping the NEW story alongside the new play()'s own loop (double-advance). */
 async function autoLoop() {
-  while (props.autoPlay && playing.value && !busy) {
+  const ctrl = controller.value
+  while (props.autoPlay && playing.value && !busy && controller.value === ctrl) {
     busy = true
     try {
       await runStep()
       // Autoplay paces on the voice: wait for the just-started line's voice to
       // finish before advancing. Manual 下一步/click never waits (atomic step).
-      if (playing.value) await controller.value?.waitForVoice()
+      if (playing.value && controller.value === ctrl) await ctrl?.waitForVoice()
     } finally { busy = false }
-    if (!playing.value) break
+    if (!playing.value || controller.value !== ctrl) break
     await new Promise(r => setTimeout(r, 200))
   }
 }
@@ -288,18 +317,29 @@ defineExpose({
   isPaused: () => paused.value,
   /** Jump to a 1-based dialog line: rebuild the scene up to that line's snippet
    *  (with voice on the landed line), and resync the history stack so 上一步
-   *  keeps working from the jumped-to position. */
+   *  keeps working from the jumped-to position. Also drives the draggable
+   *  progress bar, so it works from ANY state with a loaded story: paused
+   *  resumes (a stopped shared ticker would rebuild the scene without ever
+   *  rendering it), and a finished story revives from the landed line. */
   seekToLine: async (line: number) => {
-    if (!controller.value || !playing.value) return
-    if (stepping) controller.value.skip()
+    const ctrl = controller.value
+    if (!ctrl) return
+    if (paused.value) resumeStage()
+    if (stepping) ctrl.skip()
     while (busy) await new Promise(r => setTimeout(r, 30))
+    if (controller.value !== ctrl) return // story switched while we waited
     busy = true
     try {
-      const target = controller.value.snippetForDialogLine(line)
+      const target = ctrl.snippetForDialogLine(line)
       history.length = 0
-      for (let n = 1; n < line; n++) history.push(controller.value.snippetForDialogLine(n))
-      await controller.value.seekTo(target)
+      for (let n = 1; n < line; n++) history.push(ctrl.snippetForDialogLine(n))
+      await ctrl.seekTo(target)
+      if (controller.value !== ctrl) return
       checkpoint = target
+      if (!playing.value) {
+        playing.value = true
+        emit('loaded') // revive the page's active/status state after 剧情结束
+      }
     } finally {
       busy = false
     }

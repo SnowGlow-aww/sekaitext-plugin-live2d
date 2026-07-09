@@ -66,7 +66,8 @@ export class Live2DController {
 
   voiceVolume = 1
   bgmVolume = 0.6
-  aborted = false
+  aborted = false // per-step skip flag: set by skip()/destroy(), cleared when the next step starts
+  destroyed = false // terminal: set ONLY by destroy() — use for "stop background work forever"
   silent = false // during seekTo: skip voice + instant moves
   currentVoice: Howl | null = null
   // Per-clip base volume of the currently-playing voice (its TalkData Volume,
@@ -310,8 +311,13 @@ export class Live2DController {
     const p = (async () => {
       try {
         const settings = await loadModelSettings(costume)
-        if (!settings) return null
+        // Bail once destroyed: a prefetch that outlives the controller (story
+        // switched mid-load) must not build a model onto the detached layer —
+        // nobody would ever destroy it. (destroyed, NOT aborted: a mid-story
+        // skip click must not cancel a model an upcoming scene still needs.)
+        if (!settings || this.destroyed) return null
         const model = await Live2DModel.from(settings, { ticker: PIXI.Ticker.shared, autoInteract: false, breathDepth: 0.2 })
+        if (this.destroyed) { try { model.destroy() } catch { /* ignore */ } return null }
         model.anchor.set(0.5, 0.5)
         model.visible = false
         // Disable the auto idle MOTION group (the story drives body motions
@@ -355,10 +361,33 @@ export class Live2DController {
     return costume
   }
 
+  // During a silent seek replay we record only the LAST motion/expression per
+  // costume instead of starting every intermediate one — each start costs a
+  // motion3 fetch + a FORCE-priority restart, and replaying hundreds of them is
+  // what made 上一步/进度跳转 feel janky. flushPendingMotions applies the final
+  // pose once at the end (identical visual result).
+  private pendingMotions = new Map<string, { motion: string; expression: string }>()
+
+  private flushPendingMotions() {
+    if (this.silent || !this.pendingMotions.size) return
+    for (const [costume, p] of this.pendingMotions) {
+      if (!this.models.has(costume)) continue
+      this.applyMotion(costume, p.motion, p.expression)
+    }
+    this.pendingMotions.clear()
+  }
+
   /** Play a motion + expression by name on a costume's model.
    *  Each clip is injected as its own group (group name = clip name), so we call
    *  motion(name, 0). Expressions are applied via expression(name). */
   private applyMotion(costume: string, motion: string, expression: string) {
+    if (this.silent) {
+      const p = this.pendingMotions.get(costume) || { motion: '', expression: '' }
+      if (motion) p.motion = motion
+      if (expression) p.expression = expression
+      this.pendingMotions.set(costume, p)
+      return
+    }
     const entry = this.models.get(costume)
     if (!entry) { console.warn(`[live2d] applyMotion: no loaded model for costume "${costume}" (motion=${motion} expr=${expression})`); return }
     const m = entry.model
@@ -411,46 +440,93 @@ export class Live2DController {
   }
 
   // ---- background ----
+  private bgToken = 0
   async changeBackground(img: string) {
     if (!img) return
     // During a silent seek we replay many snippets; loading every intermediate
     // background would re-download textures serially and stall the jump. Just
     // record the latest name — seekTo loads the final one once at the end.
     if (this.silent) { this.pendingBg = img; return }
+    // Latest-requested background wins: a slow earlier load (or its background
+    // retry below) must never overwrite a newer scene's background.
+    const token = ++this.bgToken
+    const url = getBackgroundUrl(img)
     try {
       // Bound the texture load: PIXI.Texture.fromURL only settles on a load or
       // error event, so a stalled proxy response (no extension to sniff, hung
       // socket) would otherwise hang the whole timeline at this checkpoint.
       const tex = await Promise.race([
-        PIXI.Texture.fromURL(getBackgroundUrl(img)),
+        PIXI.Texture.fromURL(url),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('background load timeout')), 8000)),
       ])
-      if (this.bgSprite) {
-        this.bgSprite.texture = tex
-      } else {
-        this.bgSprite = new PIXI.Sprite(tex)
-        this.bgLayer.addChild(this.bgSprite)
-      }
-      const s = this.bgSprite
-      s.anchor.set(0.5)
-      s.x = STAGE_W / 2
-      s.y = STAGE_H / 2
-      // Cover-fit the stage. The texture may not have valid dimensions the instant
-      // fromURL resolves (especially when swapping the texture on a reused sprite),
-      // which yields a wrong/zero scale and leaves the bg as thin strips with a
-      // black band. Fit once now, and re-fit when the base texture finishes loading.
-      const fit = () => {
-        const tw = s.texture.width, th = s.texture.height
-        if (!tw || !th) return
-        s.scale.set(Math.max(STAGE_W / tw, STAGE_H / th))
-      }
-      fit()
-      const base = tex.baseTexture
-      if (!base.valid) base.once('loaded', fit)
+      if (token === this.bgToken) this.applyBgTexture(tex)
     } catch {
-      /* background missing or timed out — leave as-is, never block playback */
+      // Timed out or failed. Keep the timeline moving, but repair in the
+      // background instead of giving up: a COLD mirror fetch can exceed the 8s
+      // cap (apply it late, not never), and a genuinely FAILED load poisons
+      // PIXI's URL cache — every later attempt rejects instantly until app
+      // restart ("background missing until restart") unless we evict + refetch.
+      void this.retryBackground(url, token)
     }
+  }
+
+  private applyBgTexture(tex: PIXI.Texture) {
+    if (this.bgSprite) {
+      this.bgSprite.texture = tex
+    } else {
+      this.bgSprite = new PIXI.Sprite(tex)
+      this.bgLayer.addChild(this.bgSprite)
+    }
+    const s = this.bgSprite
+    s.anchor.set(0.5)
+    s.x = STAGE_W / 2
+    s.y = STAGE_H / 2
+    // Cover-fit the stage. The texture may not have valid dimensions the instant
+    // fromURL resolves (especially when swapping the texture on a reused sprite),
+    // which yields a wrong/zero scale and leaves the bg as thin strips with a
+    // black band. Fit once now, and re-fit when the base texture finishes loading.
+    const fit = () => {
+      const tw = s.texture.width, th = s.texture.height
+      if (!tw || !th) return
+      s.scale.set(Math.max(STAGE_W / tw, STAGE_H / th))
+    }
+    fit()
+    const base = tex.baseTexture
+    if (!base.valid) base.once('loaded', fit)
+  }
+
+  /** Second-chance background load after the bounded attempt gave up. */
+  private async retryBackground(url: string, token: number) {
+    try {
+      // First ride the ORIGINAL request with no time cap: if it was merely slow
+      // (cold CDN back-to-origin), fromURL returns the same cached promise and
+      // the background pops in late rather than staying black.
+      const tex = await PIXI.Texture.fromURL(url)
+      if (token === this.bgToken) this.applyBgTexture(tex)
+      return
+    } catch { /* genuinely failed — evict the poisoned cache entry and refetch */ }
+    Live2DController.evictTexture(url)
+    try {
+      const tex = await PIXI.Texture.fromURL(url)
+      if (token === this.bgToken) this.applyBgTexture(tex)
+    } catch {
+      // Still failing: leave the cache clean so a FUTURE change to this
+      // background (same story or another) starts from a fresh request.
+      Live2DController.evictTexture(url)
+    }
+  }
+
+  /** Drop a URL from PIXI's global texture caches. fromURL caches by URL —
+   *  INCLUDING failed loads — so one transient proxy/CDN error would otherwise
+   *  poison that background for the whole app session. */
+  private static evictTexture(url: string) {
+    try {
+      const cached: PIXI.Texture | undefined = PIXI.utils.TextureCache[url]
+      PIXI.Texture.removeFromCache(url)
+      PIXI.BaseTexture.removeFromCache(url)
+      cached?.destroy(true)
+    } catch { /* eviction is best-effort */ }
   }
   private pendingBg: string | null = null
 
@@ -535,27 +611,52 @@ export class Live2DController {
 
   /** Background-preload all costumes (models + motions) and all voice clips this
    *  scenario references, so playback never reaches a line whose model/motion or
-   *  voice hasn't loaded yet. Fire-and-forget; failures are swallowed per-item. */
+   *  voice hasn't loaded yet. Fire-and-forget; failures are swallowed per-item.
+   *  THROTTLED: firing every model (moc parse + texture decode/upload) and every
+   *  voice (proxied fetch + full Web-Audio decode) at once stuttered the opening
+   *  seconds of playback — and kept downloading after a story switch. Models load
+   *  one at a time, voices through a small worker pool, and both stop at abort. */
   private async prefetchAll() {
-    // Models: every costume that ever appears (from charCostume, populated in init).
-    const costumes = new Set(this.charCostume.values())
-    for (const c of costumes) void this.ensureModel(c)
-    // Voices: every VoiceId across all TalkData, deduped, loaded into this.voices.
+    // Models: every costume that ever appears (from charCostume, populated in
+    // init), sequentially. On-demand loads (actionLayout awaits ensureModel)
+    // still jump the queue naturally via loadingModels.
+    const costumes = [...new Set(this.charCostume.values())]
+    void (async () => {
+      for (const c of costumes) {
+        if (this.destroyed) return
+        try { await this.ensureModel(c) } catch { /* per-item best effort */ }
+      }
+    })()
+    // Voices: every VoiceId across all TalkData, deduped, in timeline order so
+    // early lines are ready first.
     if (!this.silent) {
+      const items: { vid: string; c2d?: number }[] = []
       const seen = new Set<string>()
       for (const t of this.scenario.TalkData || []) {
         for (const v of t.Voices || []) {
           if (v.VoiceId && !seen.has(v.VoiceId)) {
             seen.add(v.VoiceId)
-            const vid = v.VoiceId
-            if (!this.voices.has(vid)) {
-              loadVoice(this.scenario.ScenarioId, vid, this.source, v.Character2dId)
-                .then((a) => { if (a && !this.voices.has(vid)) this.voices.set(vid, a.howl) })
-                .catch(() => { /* preload best-effort */ })
-            }
+            items.push({ vid: v.VoiceId, c2d: v.Character2dId })
           }
         }
       }
+      let next = 0
+      const worker = async () => {
+        while (next < items.length) {
+          if (this.destroyed) return
+          const { vid, c2d } = items[next++]
+          if (this.voices.has(vid)) continue
+          try {
+            const a = await loadVoice(this.scenario.ScenarioId, vid, this.source, c2d)
+            // A load resolving after destroy() must not repopulate the cleared
+            // map (the howl would never be unloaded) — drop it instead.
+            if (!a) continue
+            if (this.destroyed) { try { a.howl.unload() } catch { /* ignore */ } ; return }
+            if (!this.voices.has(vid)) this.voices.set(vid, a.howl)
+          } catch { /* preload best-effort */ }
+        }
+      }
+      for (let w = 0; w < 3; w++) void worker()
     }
   }
 
@@ -576,6 +677,7 @@ export class Live2DController {
     this.cb.onDialog(null)
     this.pendingBg = null
     this.pendingBgm = null
+    this.pendingMotions.clear()
     const end = Math.min(target, this.scenario.Snippets.length - 1)
     // Silent fast-forward up to (but not including) the landed snippet. Each
     // action is isolated: one bad snippet (missing asset/ref) must not abort the
@@ -588,6 +690,10 @@ export class Live2DController {
     } finally {
       this.silent = false
     }
+    // Apply the final recorded motion/expression per costume once (intermediate
+    // ones were only recorded during the silent replay — see pendingMotions).
+    // Before the landed snippet, so its own motions still win.
+    this.flushPendingMotions()
     // Load the final background once (intermediate ones were skipped during the
     // silent replay so the jump stays fast and the landed scene is fully drawn).
     if (this.pendingBg) {
@@ -625,9 +731,20 @@ export class Live2DController {
 
   destroy() {
     this.aborted = true
-    this.voices.forEach((h) => h.unload())
-    this.bgm?.unload()
-    this.models.forEach((e) => e.model.destroy())
+    this.destroyed = true
+    // Release any waiters hung on this controller (waitForVoice etc.) so a step
+    // that was mid-flight can settle instead of pinning its caller forever.
+    for (const cb of [...this.abortCbs]) { try { cb() } catch { /* ignore */ } }
+    this.abortCbs.clear()
+    this.currentVoice = null
+    // Per-item guards: destroy() runs while the NEXT story starts loading; one
+    // throwing unload/destroy (e.g. a model whose assets are still mid-download)
+    // escaping here would abort that load and strand the old scene on screen.
+    this.voices.forEach((h) => { try { h.unload() } catch { /* ignore */ } })
+    this.voices.clear()
+    try { this.bgm?.unload() } catch { /* ignore */ }
+    this.bgm = null
+    this.models.forEach((e) => { try { e.model.destroy() } catch { /* ignore */ } })
     this.models.clear()
   }
 
@@ -704,7 +821,13 @@ export class Live2DController {
       let howl = this.voices.get(vid)
       if (!howl) {
         const a = await loadVoice(this.scenario.ScenarioId, vid, this.source, t.Voices[0].Character2dId)
-        if (a) { this.voices.set(vid, a.howl); howl = a.howl }
+        // The step may have been skipped (or the controller destroyed) while the
+        // clip loaded — starting it now would talk over the next line. Keep the
+        // clip cached for a live controller; unload it for a destroyed one.
+        if (this.destroyed) { if (a) { try { a.howl.unload() } catch { /* ignore */ } } return }
+        if (a && !this.voices.has(vid)) this.voices.set(vid, a.howl)
+        howl = a ? this.voices.get(vid) : undefined
+        if (this.aborted) return
       }
       if (howl) {
         this.currentVoice = howl
@@ -806,6 +929,7 @@ export class Live2DController {
       // forces the curtain clear.
       case T.BlackIn:
         this.fullcolor.draw(0x000000); this.fullcolor.g.alpha = 1
+        this.wipe.cancel() // stop an in-flight wipe too, or its ticks re-cover the reveal
         this.wipe.g.visible = false // a full reveal supersedes any lingering wipe panel
         await this.fullcolor.hide(dur || 500, inst, ab)
         break
@@ -816,6 +940,7 @@ export class Live2DController {
         break
       case T.WhiteIn:
         this.fullcolor.draw(0xffffff); this.fullcolor.g.alpha = 1
+        this.wipe.cancel() // stop an in-flight wipe too, or its ticks re-cover the reveal
         this.wipe.g.visible = false // a full reveal supersedes any lingering wipe panel
         await this.fullcolor.hide(dur || 500, inst, ab)
         break
@@ -872,6 +997,12 @@ export class Live2DController {
    *  position can't black out or tint the rebuilt scene. The replay re-applies
    *  whatever effects are actually active at the target. */
   private resetEffects() {
+    // Cancel in-flight curtain/wipe tweens FIRST: a still-ticking BlackOut from
+    // the pre-seek timeline would keep writing alpha after this reset (the seek
+    // replay clears this.aborted, so its abort check no longer stops it) and
+    // re-black the rebuilt scene.
+    this.fullcolor.cancel()
+    this.wipe.cancel()
     this.fullcolor.g.alpha = 0
     this.fullcolor.g.visible = true
     this.wipe.g.visible = false
@@ -1006,8 +1137,9 @@ export class Live2DController {
       }
       await Promise.all(group.map((i) => this.applyAction(i)))
     }
-    // If the abort fast-forward queued a background, apply it now (silent mode
-    // only records the latest name to avoid mid-transition reloads).
+    // If the abort fast-forward queued a background or motions, apply them now
+    // (silent mode only records the latest to avoid mid-transition churn).
+    this.flushPendingMotions()
     if (this.pendingBg) {
       const bg = this.pendingBg
       this.pendingBg = null

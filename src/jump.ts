@@ -72,9 +72,27 @@ export interface DoJumpOptions {
   jump: Jump
 }
 
+/** Write a jump's selection snapshot into the host story store. The snapshot is
+ *  taken at click time in the editor, so it is always at least as fresh as the
+ *  store — applying it lets a cold 独立窗口 (empty store) reconstruct play()
+ *  args, and protects the docked panel against a store selection that drifted
+ *  between publish and apply (jumping would otherwise seek inside the PREVIOUS
+ *  story). Guards keep a missing field from blanking a populated one. */
+export function applySel(story: any, sel?: JumpSel): void {
+  if (!story || !sel) return
+  if (sel.type) story.selectedType = sel.type
+  if (sel.sort != null) story.selectedSort = sel.sort
+  if (sel.index != null) story.selectedIndex = sel.index
+  if (typeof sel.chapter === 'number' && !Number.isNaN(sel.chapter)) story.selectedChapter = sel.chapter
+  if (sel.source) story.selectedSource = sel.source
+}
+
 export async function doJump(opts: DoJumpOptions): Promise<void> {
   const { stage, story, loadedKey, isActive, jump } = opts
   if (!stage) return
+  // Sync the store to the jump's snapshot FIRST — both the docked panel and the
+  // separate window funnel through here, so neither can act on a stale selection.
+  applySel(story, jump.sel)
   if (!story?.selectedType || story.selectedChapter < 0) {
     console.warn('[live2d] doJump: no story selected in host store — ignoring jump', jump)
     return

@@ -36,7 +36,13 @@ export async function fetchScenario(
   const path = await api.jsonPath(type, sort, index, chapter, source)
   if (!path.url) throw new Error('未找到该剧情的资源地址')
 
-  const res = await fetch(proxied(toExmeaning(path.url)))
+  // Bound the fetch: a hung proxy/CDN socket would otherwise leave the player on
+  // "加载中" forever (play() never settles, jumps queue behind it).
+  const signal =
+    typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+      ? AbortSignal.timeout(20000)
+      : undefined
+  const res = await fetch(proxied(toExmeaning(path.url)), { signal })
   if (!res.ok) throw new Error(`剧情 JSON 加载失败: HTTP ${res.status}`)
   const scenario = (await res.json()) as IScenarioData
 

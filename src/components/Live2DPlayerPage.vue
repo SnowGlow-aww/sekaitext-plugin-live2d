@@ -76,6 +76,17 @@ function jumpToLine() {
   jumpInput.value = null
 }
 
+// Draggable progress bar: while dragging, show the thumb position locally
+// (scrub) so live progress updates don't fight the drag; seek only on RELEASE —
+// seekTo rebuilds the scene, far too heavy to run per moved pixel.
+const scrub = ref<number | null>(null)
+function onScrub(e: Event) { scrub.value = Number((e.target as HTMLInputElement).value) }
+function commitScrub(e: Event) {
+  const v = Math.round(Number((e.target as HTMLInputElement).value))
+  scrub.value = null
+  if (v >= 1) void stageRef.value?.seekToLine(v)
+}
+
 watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
 
 // ── separate-window jump wiring ──────────────────────────────────────────────
@@ -84,22 +95,10 @@ watch([voiceVolume, bgmVolume], ([v, b]) => stageRef.value?.setVolumes(v, b))
 //   #/live2d?jump=<talkIndex>&voice=<id>&type=&sort=&index=&chapter=&source=
 // and (b) a 'live2d:jump' Tauri event (full Jump payload) for an ALREADY-OPEN
 // window. A 独立窗口 is a FRESH JS context with an EMPTY story store, so the host
-// carries its full selection in jump.sel; we write it into the host story store
-// BEFORE seeking so <Live2DStage :source> + doJump's play() args resolve. Both
-// paths funnel through the SAME doJump as the docked panel (../jump.ts).
-function applySel(sel?: JumpSel) {
-  if (!sel) return
-  // Writable Pinia setup-store refs on the host story store. Guard NaN/empty so a
-  // missing param never blanks a field.
-  if (sel.type) story.selectedType = sel.type
-  if (sel.sort != null) story.selectedSort = sel.sort
-  if (sel.index != null) story.selectedIndex = sel.index
-  if (typeof sel.chapter === 'number' && !Number.isNaN(sel.chapter)) story.selectedChapter = sel.chapter
-  if (sel.source) story.selectedSource = sel.source
-}
-
+// carries its full selection in jump.sel; doJump writes it into the host story
+// store BEFORE seeking (jump.ts applySel) so <Live2DStage :source> + play() args
+// resolve. Both paths funnel through the SAME doJump as the docked panel.
 async function handleJump(jump: Jump) {
-  applySel(jump.sel) // populate the (possibly empty) host store before doJump reads it
   await doJump({
     stage: stageRef.value as unknown as JumpStage,
     story,
@@ -210,10 +209,15 @@ onBeforeUnmount(() => { cancelled = true; unlisten?.(); unlisten = null })
         <input v-model.number="bgmVolume" type="range" min="0" max="1" step="0.05" class="range range-primary range-xs w-24" />
       </label>
       <div v-if="progress.total" class="flex items-center gap-2 flex-1 min-w-32 max-w-md">
-        <progress
-          class="progress progress-primary flex-1"
-          :value="progress.current"
+        <input
+          type="range"
+          min="1"
           :max="progress.total"
+          :value="scrub ?? progress.current"
+          @input="onScrub"
+          @change="commitScrub"
+          class="range range-primary range-xs flex-1"
+          title="拖动跳转到任意句"
         />
         <span class="text-xs opacity-60 tabular-nums shrink-0">第</span>
         <input
@@ -221,7 +225,7 @@ onBeforeUnmount(() => { cancelled = true; unlisten?.(); unlisten = null })
           type="number"
           min="1"
           :max="progress.total"
-          :placeholder="String(progress.current)"
+          :placeholder="String(scrub ?? progress.current)"
           class="input input-bordered input-xs w-14 text-center tabular-nums"
           @keyup.enter="jumpToLine"
           @blur="jumpToLine"

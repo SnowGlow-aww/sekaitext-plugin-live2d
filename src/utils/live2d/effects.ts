@@ -14,7 +14,11 @@ const OVER = 600
 /** rAF tween with easeInOutQuad; resolves when done. `instant` jumps to end.
  *  `isAborted`, when provided and it returns true mid-flight, snaps the value to
  *  the final `to` and resolves immediately — so a skipped/clicked-through step
- *  never leaves a curtain or wipe stuck at a partial alpha/position. */
+ *  never leaves a curtain or wipe stuck at a partial alpha/position.
+ *  `isCancelled` resolves WITHOUT the final write: a newer tween has taken over
+ *  the same target, and a last write from the loser would clobber the winner
+ *  (e.g. a BlackOut cover finishing after its paired BlackIn reveal in a parallel
+ *  Now-group left the curtain opaque — the flashback black-screen). */
 export function tween(
   setter: (v: number) => void,
   from: number,
@@ -22,7 +26,9 @@ export function tween(
   ms: number,
   instant = false,
   isAborted?: () => boolean,
+  isCancelled?: () => boolean,
 ): Promise<void> {
+  if (isCancelled && isCancelled()) return Promise.resolve()
   if (instant || ms <= 0 || (isAborted && isAborted())) {
     setter(to)
     return Promise.resolve()
@@ -30,6 +36,7 @@ export function tween(
   const t0 = performance.now()
   return new Promise((resolve) => {
     const tick = () => {
+      if (isCancelled && isCancelled()) return resolve()
       if (isAborted && isAborted()) { setter(to); return resolve() }
       const p = Math.min(1, (performance.now() - t0) / ms)
       const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2
@@ -41,9 +48,13 @@ export function tween(
   })
 }
 
-/** Full-screen solid color overlay (black/white curtain). */
+/** Full-screen solid color overlay (black/white curtain). Starting a show/hide
+ *  cancels any in-flight tween on the same curtain (last-started wins), so
+ *  paired cover/reveal effects that run in the same parallel snippet group can
+ *  never finish out of order and leave the screen blacked out. */
 export class Fullcolor {
   readonly g = new PIXI.Graphics()
+  private gen = 0
   constructor(parent: PIXI.Container) {
     this.g.alpha = 0
     parent.addChild(this.g)
@@ -55,13 +66,21 @@ export class Fullcolor {
     this.g.clear()
     this.g.beginFill(color, 1).drawRect(-OVER, -OVER, STAGE_W + OVER * 2, STAGE_H + OVER * 2).endFill()
   }
+  /** Invalidate any in-flight show/hide (their remaining ticks become no-ops).
+   *  Call before writing g.alpha directly (e.g. a seek's effect reset), or the
+   *  still-ticking tween re-covers the scene on its next frame. */
+  cancel() {
+    this.gen++
+  }
   /** Fade the curtain in (cover) to alpha 1. */
   show(ms: number, instant = false, isAborted?: () => boolean) {
-    return tween((a) => { this.g.alpha = a }, this.g.alpha, 1, ms, instant, isAborted)
+    const my = ++this.gen
+    return tween((a) => { this.g.alpha = a }, this.g.alpha, 1, ms, instant, isAborted, () => my !== this.gen)
   }
   /** Fade the curtain out (reveal) to alpha 0. */
   hide(ms: number, instant = false, isAborted?: () => boolean) {
-    return tween((a) => { this.g.alpha = a }, this.g.alpha, 0, ms, instant, isAborted)
+    const my = ++this.gen
+    return tween((a) => { this.g.alpha = a }, this.g.alpha, 0, ms, instant, isAborted, () => my !== this.gen)
   }
 }
 
@@ -72,6 +91,7 @@ export type WipeDir = 'left' | 'right' | 'top' | 'bottom'
  *  covering content that extends past the stage box. */
 export class Wipe {
   readonly g = new PIXI.Graphics()
+  private gen = 0
   constructor(parent: PIXI.Container) {
     this.g.beginFill(0x000000, 1)
       .drawRect(-OVER, -OVER, STAGE_W + OVER * 2, STAGE_H + OVER * 2).endFill()
@@ -87,8 +107,14 @@ export class Wipe {
       case 'bottom': return [0, STAGE_H + OVER * 2]
     }
   }
+  /** Invalidate any in-flight wipe (same contract as Fullcolor.cancel: a later
+   *  visibility write owns the panel; the loser's ticks/post-steps become no-ops). */
+  cancel() {
+    this.gen++
+  }
   /** Slide the black panel IN from `dir` to cover the screen. */
   async wipeIn(dir: WipeDir, ms: number, instant = false, isAborted?: () => boolean) {
+    const my = ++this.gen
     const [ox, oy] = this.offscreen(dir)
     this.g.visible = true
     this.g.position.set(ox, oy)
@@ -100,10 +126,12 @@ export class Wipe {
       ms,
       instant,
       isAborted,
+      () => my !== this.gen,
     )
   }
   /** Slide the black panel OUT toward `dir`, revealing the screen. */
   async wipeOut(dir: WipeDir, ms: number, instant = false, isAborted?: () => boolean) {
+    const my = ++this.gen
     const [ox, oy] = this.offscreen(dir)
     const horiz = dir === 'left' || dir === 'right'
     this.g.visible = true
@@ -114,7 +142,10 @@ export class Wipe {
       ms,
       instant,
       isAborted,
+      () => my !== this.gen,
     )
-    this.g.visible = false
+    // Only the still-owning wipe may hide the panel — a cancelled wipeOut hiding
+    // it would blank a wipeIn that took over mid-flight.
+    if (my === this.gen) this.g.visible = false
   }
 }
