@@ -118,10 +118,18 @@ onMounted(async () => {
   // import/listen resolves (onBeforeUnmount runs synchronously and would no-op
   // while `unlisten` is still null, leaking the later-resolved listener).
   try {
-    const { listen } = await import('@tauri-apps/api/event')
-    const u = await listen('live2d:jump', (e: { payload: Jump }) => { void handleJump(e.payload) })
-    if (cancelled) u()
-    else unlisten = u
+    // ONLY the separate 独立窗口 (label 'live2d') may take jump events. This same
+    // page can also be mounted (and kept-alive) in the MAIN window via the
+    // sidebar; older hosts broadcast 'live2d:jump' to every window, so without
+    // this gate the hidden main-window player would seek + play the voice in
+    // parallel with the separate window — the "voice plays twice" bug.
+    const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+    if (getCurrentWebviewWindow().label === 'live2d') {
+      const { listen } = await import('@tauri-apps/api/event')
+      const u = await listen('live2d:jump', (e: { payload: Jump }) => { void handleJump(e.payload) })
+      if (cancelled) u()
+      else unlisten = u
+    }
   } catch { /* non-Tauri (web dev): no event bus, query path still works */ }
   if (cancelled) return
 
