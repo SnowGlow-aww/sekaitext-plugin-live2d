@@ -274,14 +274,16 @@ async function autoLoop() {
  *  the start (Live2D state can't be rewound in place), now WITH voice on the
  *  landed line. Serialised through `busy`; aborts any running step first. */
 async function prev() {
-  if (!controller.value || !playing.value) return
+  const ctrl = controller.value
+  if (!ctrl || !playing.value) return
   if (history.length < 1) return
-  if (stepping) controller.value.skip()
+  if (stepping) ctrl.skip()
   while (busy) await new Promise(r => setTimeout(r, 30))
+  if (controller.value !== ctrl) return // story switched while we waited
   busy = true
   try {
     const target = history.pop() ?? 0
-    await controller.value.seekTo(target)
+    await ctrl.seekTo(target)
     checkpoint = target
   } finally {
     busy = false
