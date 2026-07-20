@@ -101,6 +101,12 @@ export function snapshotPayload(index) {
   return Buffer.from(payload)
 }
 
+export function marketExpiry(now = Date.now()) {
+  const expiry = new Date(now + 180 * 24 * 60 * 60 * 1000)
+  expiry.setUTCMilliseconds(0)
+  return expiry.toISOString().replace('.000Z', 'Z')
+}
+
 function httpsURL(value, label) {
   let url
   try { url = new URL(value) } catch { throw new Error(`${label} is not an absolute URL`) }
@@ -323,7 +329,7 @@ function main() {
       else index.plugins.push(entry)
       const previousSequence = Math.max(0, ...index.plugins.map((item) => Number.isSafeInteger(item.sequence) ? item.sequence : 0))
       const sequence = Math.max(requestedSequence, previousSequence + 1)
-      const expiresAt = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z')
+      const expiresAt = marketExpiry()
       validateAndSign(index, marketDir, privateKey, keyId, sequence, expiresAt, trustMap)
       writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`, { mode: 0o644 })
       run('git', ['-c', 'core.hooksPath=/dev/null', '-C', marketDir, 'config', 'user.name', 'github-actions[bot]'])

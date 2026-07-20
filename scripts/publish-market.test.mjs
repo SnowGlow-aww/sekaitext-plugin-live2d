@@ -9,6 +9,7 @@ import {
   assertVersionReplacement,
   commitIfChanged,
   compareStableVersions,
+  marketExpiry,
   metadataPayload,
   packagePayload,
   snapshotPayload,
@@ -47,6 +48,10 @@ test('stable version comparison is numeric', () => {
   assert.equal(compareStableVersions('10.0.0', '2.99.99'), 1)
   assert.equal(compareStableVersions('1.2.3', '1.2.3'), 0)
   assert.equal(compareStableVersions('1.2.2', '1.2.3'), -1)
+})
+
+test('generated market expiry uses canonical UTC seconds', () => {
+  assert.equal(marketExpiry(Date.parse('2026-07-20T14:08:57.364Z')), '2027-01-16T14:08:57Z')
 })
 
 test('publication rejects downgrade and equal-version byte replacement', () => {
