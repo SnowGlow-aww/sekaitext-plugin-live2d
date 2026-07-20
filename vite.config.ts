@@ -87,8 +87,8 @@ function cssInjectPlugin() {
       if (!css) return
       const inject =
         `(function(){try{var d=document,id="sekai-plugin-live2d-css";` +
-        `if(!d.getElementById(id)){var s=d.createElement("style");s.id=id;` +
-        `s.textContent=${JSON.stringify(css)};d.head.appendChild(s);}}catch(e){}})();\n`
+        `var s=d.getElementById(id);if(!s){s=d.createElement("style");s.id=id;d.head.appendChild(s);}` +
+        `s.dataset.sekaitextPlugin="live2d";s.textContent=${JSON.stringify(css)};}catch(e){}})();\n`
       for (const file of Object.values(bundle)) {
         if (file.type === 'chunk' && file.isEntry) {
           file.code = inject + file.code

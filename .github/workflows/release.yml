@@ -2,12 +2,11 @@ name: release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,216 +16,92 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-
-      - name: Ensure zip is available
+      - name: Verify exact stable tag and versions
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         run: |
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y zip
-          fi
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build plugin (.sekplugin)
-        run: npm run dist
-
-      - name: List artifacts
-        run: ls -la dist-plugins
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          LOCK_VERSION="$(node -p "require('./package-lock.json').version")"
+          LOCK_ROOT_VERSION="$(node -p "require('./package-lock.json').packages[''].version")"
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [ "$VERSION" = "$MANIFEST_VERSION" ]
+          [ "$VERSION" = "$LOCK_VERSION" ]
+          [ "$VERSION" = "$LOCK_ROOT_VERSION" ]
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ]
+      - name: Ensure zip is available
+        run: command -v zip >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y zip; }
+      - run: npm ci
+      - run: node --test scripts/publish-market.test.mjs
+      - run: npm run dist
+      - name: Verify deterministic package bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACT="dist-plugins/$(node -p "require('./manifest.json').id + '-' + require('./manifest.json').version + '.sekplugin'")"
+          FIRST="$(sha256sum "$ARTIFACT" | cut -d' ' -f1)"
+          npm run pack
+          [ "$FIRST" = "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" ]
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sekplugin
           path: dist-plugins/*.sekplugin
           if-no-files-found: error
 
-      - name: Create / update GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sekplugin
+          path: dist-plugins
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
+          overwrite_files: false
           files: dist-plugins/*.sekplugin
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   publish-market:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: release
     if: startsWith(github.ref, 'refs/tags/')
-    # Optional least-privilege hardening: this job only READS its own repo
-    # (manifest.json) and downloads the same-run artifact; the cross-repo
-    # write goes through the PAT, never GITHUB_TOKEN. You may add:
-    #   permissions:
-    #     contents: read
-    # (download-artifact@v4 for the current run uses the runtime token and
-    # does not need actions:read). Left inheriting workflow-level perms here
-    # to avoid coupling to that internal behavior.
-    #
-    # secrets.* cannot be referenced in a step `if:`, so surface the token's
-    # presence as a job-level env flag and gate the publish steps on it.
-    env:
-      HAS_MANIFEST_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    environment: plugin-market-signer
+    concurrency:
+      group: plugin-market-write
+      cancel-in-progress: false
     steps:
-      - name: Checkout plugin repo
-        uses: actions/checkout@v4
-
-      - name: Download built .sekplugin
-        if: env.HAS_MANIFEST_TOKEN == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: sekplugin
           path: dist-plugins
-
-      - name: Publish to plugin market
-        if: env.HAS_MANIFEST_TOKEN == 'true'
+      - name: Publish and sign from trusted tagged source
         env:
           MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          # --- 1. Read metadata from the plugin manifest -------------------
-          # Required fields use `// empty`; optional fields use `// ""` so a
-          # missing key never lands the literal string "null" in index.json.
-          VERSION="$(jq -r '.version // empty' manifest.json)"
-          ID="$(jq -r '.id // empty' manifest.json)"
-          NAME="$(jq -r '.name // empty' manifest.json)"
-          DESCRIPTION="$(jq -r '.description // ""' manifest.json)"
-          AUTHOR="$(jq -r '.author // ""' manifest.json)"
-          ICON="$(jq -r '.icon // ""' manifest.json)"
-          MINHOST="$(jq -r '.minHostVersion // ""' manifest.json)"
-
-          if [ -z "$ID" ];      then echo "::error::manifest.json is missing .id" >&2; exit 1; fi
-          if [ -z "$NAME" ];    then echo "::error::manifest.json is missing .name" >&2; exit 1; fi
-          if [ -z "$VERSION" ]; then echo "::error::manifest.json is missing .version" >&2; exit 1; fi
-
-          HOMEPAGE="https://github.com/SnowGlow-aww/sekaitext-plugin-live2d"
-
-          # --- 2. Locate the built artifact -------------------------------
-          # Prefer the expected versioned name; fall back to the single
-          # .sekplugin the build produced, so a tag-vs-manifest naming skew
-          # (e.g. tag v3.0.4 vs manifest 3.0.4) can't cause a false "missing".
-          SRC="dist-plugins/live2d-${VERSION}.sekplugin"
-          if [ ! -f "$SRC" ]; then
-            SRC="$(find dist-plugins -maxdepth 1 -type f -name '*.sekplugin' 2>/dev/null | sort | head -n1 || true)"
-          fi
-          if [ -z "${SRC:-}" ] || [ ! -f "$SRC" ]; then
-            echo "::error::No built .sekplugin found in dist-plugins" >&2
-            ls -la dist-plugins || true
-            exit 1
-          fi
-          # Derive the published filename from the REAL artifact so the
-          # download URL and the committed file are always consistent.
-          FILENAME="$(basename "$SRC")"
-          DOWNLOAD_URL="https://raw.githubusercontent.com/SnowGlow-aww/sekaitext-plugins/main/plugins/${FILENAME}"
-
-          # --- 3. Clone the market repo using the fine-grained PAT --------
-          git clone --depth 1 \
-            "https://x-access-token:${MANIFEST_REPO_TOKEN}@github.com/SnowGlow-aww/sekaitext-plugins.git" \
-            market
-
-          # --- 4. Copy the binary in (keep older versions, never delete) --
-          mkdir -p market/plugins
-          cp "$SRC" "market/plugins/${FILENAME}"
-
-          # --- 5. sha256 of the exact committed binary -------------------
-          SHA="$(sha256sum "market/plugins/${FILENAME}" | cut -d' ' -f1)"
-
-          cd market
-
-          if [ ! -f index.json ]; then
-            echo '{"version":1,"plugins":[]}' > index.json
-          fi
-
-          # --- 6. Upsert the entry (atomic write, idempotent) ------------
-          # A single $entry built from ALL manifest fields is used for both
-          # insert and in-place update, so every field (not just version/sha)
-          # stays in sync with manifest.json and re-running the same tag
-          # yields byte-identical JSON (no dup, no churn). The temp file is
-          # created IN THE SAME directory as index.json so the final `mv` is
-          # a true atomic rename, and index.json is never truncated if jq
-          # fails (we never do `jq ... > index.json`).
-          TMP="$(mktemp ./index.json.XXXXXX)"
-          trap 'rm -f "$TMP"' EXIT
-          jq \
-            --arg id "$ID" \
-            --arg name "$NAME" \
-            --arg version "$VERSION" \
-            --arg description "$DESCRIPTION" \
-            --arg author "$AUTHOR" \
-            --arg icon "$ICON" \
-            --arg minHostVersion "$MINHOST" \
-            --arg download "$DOWNLOAD_URL" \
-            --arg sha256 "$SHA" \
-            --arg homepage "$HOMEPAGE" \
-            '
-            {
-              id: $id,
-              name: $name,
-              version: $version,
-              description: $description,
-              author: $author,
-              icon: $icon,
-              minHostVersion: $minHostVersion,
-              download: $download,
-              sha256: $sha256,
-              homepage: $homepage
-            } as $entry
-            | .version = (.version // 1)
-            | .plugins = (
-                (.plugins // []) as $list
-                | if any($list[]; .id == $entry.id)
-                  then ($list | map(if .id == $entry.id then $entry else . end))
-                  else ($list + [$entry])
-                  end
-              )
-            ' index.json > "$TMP"
-          mv "$TMP" index.json
-          trap - EXIT
-
-          # --- 7. Commit + push (skip cleanly when nothing changed) ------
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add "plugins/${FILENAME}" index.json
-
-          # `git diff --cached --quiet` exits 1 when there ARE staged changes,
-          # but inside an `if` condition errexit is suppressed, so set -e does
-          # not abort here. Re-running the same tag stages nothing -> exit 0.
-          if git diff --cached --quiet; then
-            echo "No changes to publish: market already up to date for ${FILENAME}."
-            exit 0
-          fi
-
-          git commit -m "live2d: publish v${VERSION}"
-
-          # Push with bounded retry: the per-ref concurrency group means a
-          # different tag (or another repo's publish) can advance main between
-          # our shallow clone and push, causing a non-fast-forward rejection.
-          n=0
-          until git push origin HEAD:main; do
-            n=$((n + 1))
-            if [ "$n" -ge 5 ]; then
-              echo "::error::Failed to push to market repo after ${n} attempts" >&2
-              exit 1
-            fi
-            echo "Push rejected (concurrent update?); syncing and retrying (${n})..."
-            git fetch origin main
-            git rebase origin/main
-          done
-
-      - name: Skip market publish (no token)
-        if: env.HAS_MANIFEST_TOKEN != 'true'
-        run: |
-          echo "MANIFEST_REPO_TOKEN is not set; skipping market publish."
-          echo "The .sekplugin was still attached to this plugin repo's own release."
+          PLUGIN_SIGNING_PRIVATE_KEY: ${{ secrets.PLUGIN_SIGNING_PRIVATE_KEY }}
+          PLUGIN_SIGNING_KEY_ID: ${{ vars.PLUGIN_SIGNING_KEY_ID }}
+          SEKAITEXT_PLUGIN_PUBLIC_KEYS: ${{ vars.SEKAITEXT_PLUGIN_PUBLIC_KEYS }}
+          MARKET_SEQUENCE: ${{ github.run_id }}
+          PLUGIN_HOMEPAGE: https://github.com/SnowGlow-aww/sekaitext-plugin-live2d
+        run: node scripts/publish-market.mjs

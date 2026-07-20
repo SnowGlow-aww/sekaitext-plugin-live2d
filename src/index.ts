@@ -45,5 +45,5 @@ export function setup(host: any) {
 }
 
 export function teardown() {
-  // Route + sidebar removal handled by the host registry; nothing else persists.
+  document.getElementById('sekai-plugin-live2d-css')?.remove()
 }
